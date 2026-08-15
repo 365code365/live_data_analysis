@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shlex
 import subprocess
@@ -25,6 +26,10 @@ def ensure_adb_server() -> None:
     with _adb_server_lock:
         if _adb_server_started:
             return
+        # adb 34 的 mDNS 自动发现在容器网络里可能把 start-server 挂死
+        os.environ.setdefault("ADB_MDNS", "0")
+        os.environ.setdefault("ADB_MDNS_AUTO_CONNECT", "0")
+        os.environ.setdefault("ADB_MDNS_OPENSCREEN", "0")
         try:
             subprocess.run(
                 ["adb", "start-server"],

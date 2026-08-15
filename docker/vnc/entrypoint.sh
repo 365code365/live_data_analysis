@@ -85,7 +85,27 @@ CHILD_PIDS+=("$!")
 log "noVNC 监听 :$NOVNC_PORT  →  http://<host>:<mapped>/vnc.html?autoconnect=1&resize=scale"
 
 # ── 等安卓起来 ───────────────────────────────────────────────────────────
-adb start-server >/dev/null 2>&1
+# adb 34 的 mDNS 自动发现在这种受限网络命名空间里会把 start-server 挂死，
+# 整个入口脚本就卡在这一行不动了。这里直接关掉，我们只用固定地址连接。
+export ADB_MDNS=0
+export ADB_MDNS_AUTO_CONNECT=0
+export ADB_MDNS_OPENSCREEN=0
+
+# redroid 的 adbd 监听 5555，正好落在 adb 的模拟器端口区间(5554-5585)里，
+# 用 127.0.0.1 连会被 adb 当成 emulator-5554 并卡在 offline。
+# 换成本容器自身的非回环地址就能绕开这套模拟器识别逻辑。
+if [[ "$ADB_TARGET" == 127.0.0.1:* || "$ADB_TARGET" == localhost:* ]]; then
+  self_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -n "$self_ip" ]]; then
+    ADB_TARGET="${self_ip}:${ADB_TARGET##*:}"
+    log "adb 目标改用非回环地址 $ADB_TARGET（避免被 adb 误判成模拟器）"
+  fi
+fi
+
+adb kill-server >/dev/null 2>&1 || true
+if ! timeout 30 adb start-server >/dev/null 2>&1; then
+  log "警告: adb start-server 超时或失败，后续连接会自行重试"
+fi
 log "等待安卓设备 $ADB_TARGET ..."
 for i in $(seq 1 180); do
   adb connect "$ADB_TARGET" >/dev/null 2>&1
