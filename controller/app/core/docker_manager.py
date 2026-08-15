@@ -166,7 +166,12 @@ class DockerManager:
             environment=env,
             cap_add=["NET_ADMIN"],
             devices=["/dev/net/tun:/dev/net/tun:rwm"],
-            sysctls={"net.ipv4.conf.all.src_valid_mark": "1"},
+            sysctls={
+                "net.ipv4.conf.all.src_valid_mark": "1",
+                # 在内核层面关掉 IPv6，比靠 ip6tables 拦更彻底，
+                # 也避免组件优先走 ::1 时被防火墙规则拖住
+                "net.ipv6.conf.all.disable_ipv6": "1",
+            },
             ports={"5555/tcp": adb_port, "6080/tcp": novnc_port},
             network=settings.docker_network,
             labels=self._labels(device_id, ROLE_GATEWAY),
