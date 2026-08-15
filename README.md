@@ -87,6 +87,58 @@ App 每次改版，UI 控件都可能变。所有 UI 定位规则都在
 改 YAML 即可修复采集，不用改代码、不用重新构建镜像。
 调试方式：控制台设备卡 →「UI Dump」，拿到当前页面完整控件树。
 
+## 常见问题
+
+### 构建极慢，或 apt 随机报 500 / Unable to connect
+
+大概率是宿主代理的问题：Docker Desktop 会继承 macOS 系统代理，代理软件一关，
+端口就没人监听了，而构建期每个 apt/pip 请求都要先撞一次死代理再重试。
+
+```bash
+make check-proxy      # 一眼看出是不是这个原因
+```
+
+本项目已经默认规避：`make build` 会传入空的 `http_proxy/https_proxy` build-arg，
+并默认使用阿里云镜像源。所以正常情况下你不需要做任何事。
+
+```bash
+make build-vnc APT_MIRROR=mirrors.tuna.tsinghua.edu.cn   # 换源
+make build BUILD_NO_PROXY=0                              # 确实要走代理时
+make build-vnc APT_MIRROR=                               # 用官方源
+```
+
+另外，VNC 镜像里 `scrcpy` 会带进整套 ffmpeg + SDL2，一共 200 多个包，
+首次构建 3-8 分钟是正常的；已配置 apt 缓存挂载，重试不会重新下载。
+
+### 设备起不来 / 状态一直 starting
+
+按顺序看：
+
+```bash
+make check-host                              # binder、/dev/net/tun 是否就绪
+curl -s localhost:8000/api/devices/1/status  # 三个容器分别是什么状态
+curl -s "localhost:8000/api/devices/1/logs?role=android&tail=200"
+```
+
+redroid 常见问题是宿主内核没有 binder，见上面「运行要求」。
+
+### 采不到商品 / 采到的字段是空的
+
+App 改版了。用控制台设备卡上的 **UI Dump** 看当前界面真实控件树，
+再对着调 `controller/app/platforms/selectors/*.yaml`，改完调用
+`POST /api/system/selectors/reload` 热加载，不用重启容器。
+
+### 代理配了但出口 IP 没变
+
+点代理列表里的「测试」，它会起一个一次性网关容器实测出口 IP。
+设备侧点「查出口 IP」是在该设备的网关容器里实测。两者不一致时看网关日志：
+
+```bash
+curl -s "localhost:8000/api/devices/1/logs?role=gw&tail=100"
+```
+
+网关是 fail-closed 的：tun2socks 挂掉时容器直接退出并重启，不会裸奔出网。
+
 ## 合规提醒
 
 - 仅采集直播间公开可见的信息；不要抓取用户隐私数据。

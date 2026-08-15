@@ -66,8 +66,13 @@
     $('#modalBody').innerHTML = html;
     $('#modal').hidden = false;
   }
-  $('#modalClose').addEventListener('click', () => { $('#modal').hidden = true; });
-  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('#modal').hidden = true; });
+  function closeModal() {
+    $('#modal').hidden = true;
+    $('#modalBody').innerHTML = '';
+  }
+  $('#modalClose').addEventListener('click', closeModal);
+  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
 
   // ── 视图切换 ────────────────────────────────────────────────────────
   $$('.tab').forEach((tab) => tab.addEventListener('click', () => {

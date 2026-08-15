@@ -5,15 +5,36 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai
 
+# 国内构建默认换源；想用官方源就 --build-arg APT_MIRROR= --build-arg PIP_INDEX_URL=
+ARG APT_MIRROR=mirrors.aliyun.com
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
+RUN set -eux; \
+    if [ -n "${APT_MIRROR}" ]; then \
+      for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+        [ -f "$f" ] || continue; \
+        sed -i \
+          -e "s|http://deb.debian.org/debian|http://${APT_MIRROR}/debian|g" \
+          -e "s|http://security.debian.org/debian-security|http://${APT_MIRROR}/debian-security|g" \
+          "$f"; \
+      done; \
+    fi; \
+    rm -f /etc/apt/apt.conf.d/docker-clean; \
+    echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+
 # adb: 设备控制 / 录屏拉取；ffmpeg: 录像分段合并
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        adb ffmpeg curl ca-certificates tzdata procps \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
+        adb ffmpeg curl ca-certificates tzdata procps
 
 WORKDIR /app
 
 COPY controller/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install ${PIP_INDEX_URL:+--index-url ${PIP_INDEX_URL}} \
+        ${PIP_INDEX_URL:+--trusted-host $(echo "${PIP_INDEX_URL}" | sed -E 's#^https?://([^/]+).*#\1#')} \
+        -r /app/requirements.txt
 
 COPY controller/app /app/app
 

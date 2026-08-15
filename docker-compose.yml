@@ -3,6 +3,15 @@ services:
     build:
       context: .
       dockerfile: docker/controller/Dockerfile
+      args:
+        APT_MIRROR: ${APT_MIRROR-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL-https://mirrors.aliyun.com/pypi/simple/}
+        # 置空以覆盖 Docker Desktop 从系统继承的代理（代理软件关闭时会拖垮构建）
+        http_proxy: ${BUILD_HTTP_PROXY-}
+        https_proxy: ${BUILD_HTTPS_PROXY-}
+        HTTP_PROXY: ${BUILD_HTTP_PROXY-}
+        HTTPS_PROXY: ${BUILD_HTTPS_PROXY-}
+        no_proxy: ${BUILD_NO_PROXY_HOSTS-*}
     image: ldm/controller:latest
     container_name: ldm_controller
     restart: unless-stopped
@@ -35,6 +44,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/app/data
       - ./apks:/app/apks:ro
+      # 控制台前端与选择器规则挂进去：改完刷新页面 / 调 reload 接口即生效，不用重建镜像
+      - ./controller/app/web:/app/app/web:ro
+      - ./controller/app/platforms/selectors:/app/app/platforms/selectors:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
