@@ -41,8 +41,15 @@ log "上行链路: dev=$UPLINK_IF gw=$UPLINK_GW subnet=${LOCAL_SUBNET:-unknown}"
 # ── IPv6 关闭（避免绕过 tun 泄漏）────────────────────────────────────────
 if [[ "$DISABLE_IPV6" == "true" ]]; then
   sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
-  ip6tables -P OUTPUT DROP  >/dev/null 2>&1 || true
+  # 回环必须放行：容器内很多组件（尤其 adb）会优先用 ::1 连本地服务，
+  # 一刀切 DROP 会让这些连接静默卡死，而不是立刻失败。
+  ip6tables -A OUTPUT -o lo -j ACCEPT >/dev/null 2>&1 || true
+  ip6tables -A INPUT  -i lo -j ACCEPT >/dev/null 2>&1 || true
+  # 对外用 REJECT 而不是 DROP：出网要立刻报错，不能让调用方一直等超时。
+  ip6tables -A OUTPUT ! -o lo -j REJECT --reject-with icmp6-adm-prohibited >/dev/null 2>&1 \
+    || ip6tables -A OUTPUT ! -o lo -j REJECT >/dev/null 2>&1 || true
   ip6tables -P FORWARD DROP >/dev/null 2>&1 || true
+  log "IPv6 出网已禁止（回环放行，避免本地连接卡死）"
 fi
 
 # ── 直连模式 ─────────────────────────────────────────────────────────────
