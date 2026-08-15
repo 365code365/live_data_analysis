@@ -40,13 +40,13 @@ ok "已生成 $CONF"
 # ── 创建 / 启动 ───────────────────────────────────────────────────────────
 if limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$INSTANCE"; then
   status=$(limactl list --format '{{.Status}}' "$INSTANCE" 2>/dev/null || echo Unknown)
-  info "实例 $INSTANCE 已存在（$status）"
+  info "实例 $INSTANCE 已存在（${status}）"
   if [[ "$status" != "Running" ]]; then
     info "启动中，首次启动要装内核模块包，请耐心等待…"
     limactl start "$INSTANCE"
   fi
 else
-  info "创建虚拟机 $INSTANCE（cpus=$CPUS mem=$MEMORY disk=$DISK）"
+  info "创建虚拟机 ${INSTANCE}（cpus=$CPUS mem=$MEMORY disk=${DISK}）"
   info "要下载 Ubuntu 24.04 云镜像（约 600MB）+ 安装内核模块包，首次 5-15 分钟"
   limactl start --name="$INSTANCE" --tty=false "$CONF"
 fi

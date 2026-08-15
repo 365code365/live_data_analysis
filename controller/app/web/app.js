@@ -236,7 +236,12 @@
     }
 
     $('#deviceList').innerHTML = devices.map((d) => {
-      const vncUrl = `http://${location.hostname}:${d.novnc_port}/vnc.html?autoconnect=1&resize=scale&password=${encodeURIComponent(d.vnc_password || '')}`;
+      const cs = d.container_states || {};
+      const dot = (role, label) => {
+        const st = cs[role];
+        const cls = st === 'running' ? 'ok' : (st ? 'error' : '');
+        return `<span class="badge ${cls}">${label} ${st || '未创建'}</span>`;
+      };
       return `
       <div class="device" data-id="${d.id}">
         <header>
@@ -244,6 +249,7 @@
           ${d.recording ? '<span class="badge recording">录屏中</span>' : ''}
         </header>
         <div class="kv">
+          <div class="k">容器</div><div class="v">${dot('gw', '网关')} ${dot('android', '安卓')} ${dot('vnc', '画面')}</div>
           <div class="k">分辨率</div><div class="v">${d.width}×${d.height} @${d.dpi}dpi</div>
           <div class="k">代理</div><div class="v">${d.proxy_name ? esc(d.proxy_name) + ' · ' + esc(d.proxy_url_masked) : '直连'}</div>
           <div class="k">出口 IP</div><div class="v">${d.egress_ip ? esc(d.egress_ip) + (d.egress_region ? ' (' + esc(d.egress_region) + ')' : '') : '未检测'}</div>
@@ -255,7 +261,7 @@
           ${d.status === 'running'
             ? `<button class="btn small" data-act="stop">停止</button><button class="btn small" data-act="restart">重启</button>`
             : `<button class="btn small primary" data-act="start">启动</button>`}
-          <a class="btn small" href="${vncUrl}" target="_blank" rel="noopener">VNC</a>
+          <button class="btn small" data-act="vnc">VNC</button>
           <button class="btn small" data-act="status">状态</button>
           <button class="btn small" data-act="egress">查出口IP</button>
           <button class="btn small" data-act="shot">截图</button>
@@ -318,9 +324,36 @@
         toast(s.ip ? `出口 IP: ${s.ip} ${s.country || ''}` : `失败: ${s.error}`, s.ip ? 'ok' : 'err');
         break;
       }
-      case 'shot':
-        modal('实时截图', `<img src="/api/devices/${id}/screenshot?t=${Date.now()}" alt="设备截图" />`);
+      case 'vnc': {
+        const info = await api(`/api/devices/${id}/vnc`);
+        const url = `http://${location.hostname}:${info.novnc_port}${info.path}`;
+        if (!info.ready) {
+          modal('VNC 还不能用', `
+            <div class="alert" style="margin:0"><div class="alert-title">打开会白屏或报连接重置</div>
+            <div class="alert-body">${esc(info.problem || '画面容器未就绪')}</div>
+            <div class="alert-meta">容器状态: ${esc(JSON.stringify(info.container_states))}</div></div>
+            <p class="hint">确实要打开： <a href="${url}" target="_blank" rel="noopener">${esc(url)}</a></p>`);
+          return;
+        }
+        window.open(url, '_blank', 'noopener');
         return;
+      }
+      case 'shot': {
+        // 先取数据再渲染：直接塞 <img src> 的话失败只会看到一个坏图标
+        const res = await fetch(`/api/devices/${id}/screenshot?t=${Date.now()}`);
+        if (!res.ok) {
+          let detail = res.statusText;
+          try { detail = (await res.json()).detail || detail; } catch (_) { /* 非 JSON */ }
+          modal('截图失败', `<div class="alert" style="margin:0">
+            <div class="alert-title">拿不到设备画面</div>
+            <div class="alert-body">${esc(detail)}</div></div>`);
+          return;
+        }
+        const blob = await res.blob();
+        const objUrl = URL.createObjectURL(blob);
+        modal('实时截图', `<img src="${objUrl}" alt="设备截图" />`);
+        return;
+      }
       case 'ui': {
         const platform = prompt('要顺带跑一遍提取规则吗？填 douyin / xiaohongshu，留空只看控件树', '') || '';
         const q = platform ? `?platform=${encodeURIComponent(platform)}` : '';

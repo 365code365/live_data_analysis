@@ -1,0 +1,113 @@
+# Lima 虚拟机定义：给 redroid 提供一个带 binder 的 Linux 内核。
+# 由 scripts/lima-up.sh 把 /Users/shengye/pojects/live_data_analysis 替换成实际项目路径后使用。
+#
+# macOS 的 Docker Desktop 用的是 LinuxKit 内核，不含 binder 模块（实测只有
+# fakeowner/grpcfuse/rosetta/selfowner/shiftfs 五个），安卓容器无法启动。
+# Ubuntu 的 linux-modules-extra 里带 binder_linux，所以在这台虚拟机内一切正常。
+
+minimumLimaVersion: "1.0.0"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+cpus: 6
+memory: "8GiB"
+disk: "40GiB"
+
+# 用不到 lima 自带的 containerd，关掉省资源（我们用虚拟机里的 docker）
+containerd:
+  system: false
+  user: false
+
+mounts:
+  - location: "/Users/shengye/pojects/live_data_analysis"
+    writable: true
+
+# 数据库/截图/录像放虚拟机本地盘，不要走 virtiofs 共享目录：
+# SQLite 在共享文件系统上锁语义不可靠。
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+
+      # ── 换国内源（境外源在国内很慢）──────────────────────────────
+      if [ -n "mirrors.aliyun.com" ]; then
+        for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+          [ -f "$f" ] || continue
+          sed -i \
+            -e "s|http://ports.ubuntu.com/ubuntu-ports|http://mirrors.aliyun.com/ubuntu-ports|g" \
+            -e "s|http://archive.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g" \
+            -e "s|http://security.ubuntu.com/ubuntu|http://mirrors.aliyun.com/ubuntu|g" \
+            "$f"
+        done
+      fi
+
+      apt-get update
+      apt-get install -y --no-install-recommends \
+        docker.io docker-compose-v2 make curl ca-certificates \
+        "linux-modules-extra-$(uname -r)"
+
+      # ── binder：redroid 的硬性前提 ───────────────────────────────
+      echo binder_linux > /etc/modules-load.d/ldm-binder.conf
+      echo 'options binder_linux devices=binder,hwbinder,vndbinder' > /etc/modprobe.d/ldm-binder.conf
+      modprobe binder_linux devices=binder,hwbinder,vndbinder
+      mkdir -p /dev/binderfs
+      mountpoint -q /dev/binderfs || mount -t binder binder /dev/binderfs || true
+
+      # ── tun：代理网关建隧道要用 ──────────────────────────────────
+      echo tun > /etc/modules-load.d/ldm-tun.conf
+      modprobe tun || true
+
+      # ── 多实例安卓需要更高的 inotify 上限 ────────────────────────
+      cat > /etc/sysctl.d/99-ldm.conf <<'EOF'
+      fs.inotify.max_user_instances=8192
+      fs.inotify.max_user_watches=524288
+      EOF
+      sysctl --system >/dev/null
+
+      systemctl enable --now docker
+
+      # lima 用户加入 docker 组
+      for u in /home/*; do
+        [ -d "$u" ] || continue
+        usermod -aG docker "$(basename "$u")" || true
+      done
+
+      # 运行期数据目录放本地盘
+      mkdir -p /var/lib/ldm/data
+      chmod 777 /var/lib/ldm/data
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      # 每次启动都确认 binder 在位（模块自动加载偶发失败时兜底）
+      set -eu
+      modprobe binder_linux devices=binder,hwbinder,vndbinder 2>/dev/null || true
+      modprobe tun 2>/dev/null || true
+      mkdir -p /dev/binderfs
+      mountpoint -q /dev/binderfs || mount -t binder binder /dev/binderfs 2>/dev/null || true
+
+probes:
+  - description: "docker 与 binder 就绪"
+    script: |
+      #!/bin/bash
+      set -eu
+      timeout 300s bash -c 'until command -v docker >/dev/null 2>&1; do sleep 3; done'
+      timeout 300s bash -c 'until docker info >/dev/null 2>&1; do sleep 3; done'
+      timeout 120s bash -c 'until grep -qw binder /proc/filesystems; do sleep 3; done'
+    hint: |
+      binder 或 docker 没有就绪。进虚拟机排查：
+        limactl shell ldm -- sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+        limactl shell ldm -- grep binder /proc/filesystems
+
+# lima 默认会把虚拟机里监听的端口自动转发到 macOS 的 localhost，
+# 所以 Mac 上的浏览器直接访问 localhost:8000 / localhost:21000+ 即可。
+portForwards:
+  - guestIPMustBeZero: true
+    guestPortRange: [1024, 65535]
+    hostIP: "127.0.0.1"

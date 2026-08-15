@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFi
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core import collector, device_service
+from ..core import collector, device_service, host
 from ..core.android import get_device
 from ..core.device_service import DeviceError
 from ..core.docker_manager import DockerError, get_docker
@@ -39,8 +39,22 @@ def _get(session: Session, device_id: int) -> Device:
     return device
 
 
-def _out(session: Session, device: Device) -> dict[str, Any]:
+def _container_states() -> dict[str, dict[str, str]]:
+    """一次 docker 调用拿到全部设备容器的真实状态：{device_id: {role: state}}。"""
+    out: dict[str, dict[str, str]] = {}
+    try:
+        for c in get_docker().list_managed():
+            did, role = c.get("device_id"), c.get("role")
+            if did and role:
+                out.setdefault(did, {})[role] = c["status"]
+    except DockerError as exc:
+        log.warning("读取容器状态失败: %s", exc)
+    return out
+
+
+def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, str]]] = None) -> dict[str, Any]:
     proxy = session.get(ProxyProfile, device.proxy_id) if device.proxy_id else None
+    cstate = (states or {}).get(str(device.id), {}) if states is not None else None
     return {
         "id": device.id,
         "name": device.name,
@@ -63,6 +77,10 @@ def _out(session: Session, device: Device) -> dict[str, Any]:
             "android": device.android_container,
             "vnc": device.vnc_container,
         },
+        # 容器真实状态；None 表示本次没查（详情接口用 /status 拿更全的信息）
+        "container_states": cstate,
+        "android_running": (cstate or {}).get("android") == "running" if cstate is not None else None,
+        "vnc_running": (cstate or {}).get("vnc") == "running" if cstate is not None else None,
         "data_volume": device.data_volume,
         "recording": recorder.is_recording(int(device.id)) if device.id else False,
         "last_error": device.last_error,
@@ -76,7 +94,8 @@ def _out(session: Session, device: Device) -> dict[str, Any]:
 @router.get("")
 def list_devices(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     devices = session.exec(select(Device).order_by(Device.id)).all()
-    return [_out(session, d) for d in devices]
+    states = _container_states()
+    return [_out(session, d, states) for d in devices]
 
 
 @router.post("", status_code=201)
@@ -279,12 +298,40 @@ def open_deeplink(device_id: int, payload: DeeplinkAction, session: Session = De
     return {"output": out}
 
 
+def _offline_reason(device: Device) -> str:
+    """安卓不在线时，给出能直接照着做的原因说明，而不是干巴巴的 device offline。"""
+    caps = host.capabilities()
+    states = _container_states().get(str(device.id), {})
+    android = states.get("android")
+
+    if not caps["android_supported"]:
+        return (
+            "安卓容器无法在当前宿主运行：内核缺少 binder。\n"
+            + host.BINDER_HELP
+        )
+    if android is None:
+        return "安卓容器不存在，请先启动设备。"
+    if android != "running":
+        logs = get_docker().logs(device.android_container or "", tail=20).strip()
+        return (
+            f"安卓容器当前状态为 {android}，不是 running。\n"
+            + (f"容器日志：\n{logs[:600]}" if logs else "容器没有日志输出。")
+        )
+    return (
+        "安卓容器在跑，但 adb 还连不上。首次开机需要 1-3 分钟，"
+        "稍等后重试；一直如此就看安卓容器日志。"
+    )
+
+
 @router.get("/{device_id}/screenshot")
 def screenshot(device_id: int, session: Session = Depends(get_session)) -> Response:
     device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
     tmp = settings.screenshots_dir / f"_live_{device_id}.png"
     try:
-        get_device(device.adb_addr).screenshot(tmp)
+        dev.screenshot(tmp)
         data = tmp.read_bytes()
     except Exception as exc:
         raise HTTPException(400, f"截图失败: {exc}") from exc
@@ -336,9 +383,26 @@ def stop_record(device_id: int, session: Session = Depends(get_session)) -> dict
 @router.get("/{device_id}/vnc")
 def vnc_info(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
+    states = _container_states().get(str(device.id), {})
+    vnc_state = states.get("vnc")
+    ready = vnc_state == "running"
+    problem = None
+    if not ready:
+        problem = (
+            f"画面容器状态为 {vnc_state or '不存在'}，noVNC 端口上没有服务，"
+            "浏览器会直接报连接被重置。先把设备启动起来。"
+        )
+    elif states.get("android") != "running":
+        problem = (
+            "画面容器在跑，但安卓容器没跑起来，noVNC 里只会看到一块黑屏（scrcpy 连不上设备）。\n"
+            + _offline_reason(device)
+        )
     return {
         "novnc_port": device.novnc_port,
         "password": device.vnc_password,
         "path": f"/vnc.html?autoconnect=1&resize=scale&password={device.vnc_password or ''}",
+        "ready": ready and states.get("android") == "running",
+        "container_states": states,
+        "problem": problem,
         "hint": "用浏览器打开 http://<部署机IP>:<novnc_port>/vnc.html",
     }

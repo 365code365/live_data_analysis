@@ -39,6 +39,28 @@ build-controller: ## 构建控制器镜像
 check-proxy: ## 检查宿主代理是否是构建慢的元凶
 	@bash scripts/check-build-proxy.sh
 
+# ── macOS：把整条链路搬进带 binder 的 Linux 虚拟机 ──────────────────────
+LIMA_INSTANCE ?= ldm
+
+lima-up: ## [macOS] 创建/启动带 binder 的 Linux 虚拟机
+	@bash scripts/lima-up.sh
+
+lima-deploy: lima-up ## [macOS] 在虚拟机内一键构建并启动全部服务
+	@limactl shell $(LIMA_INSTANCE) -- bash -lc 'cd $(CURDIR) && \
+		cp -n .env.example .env 2>/dev/null || true; \
+		grep -q "^DATA_HOST_DIR=" .env || echo "DATA_HOST_DIR=/var/lib/ldm/data" >> .env; \
+		make build && make pull-android && make up'
+	@echo "控制台: http://localhost:$${CONTROLLER_PORT:-8000}（lima 已自动转发端口）"
+
+lima-shell: ## [macOS] 进入虚拟机
+	@limactl shell $(LIMA_INSTANCE)
+
+lima-stop: ## [macOS] 停止虚拟机
+	@limactl stop $(LIMA_INSTANCE)
+
+lima-delete: ## [macOS] 删除虚拟机（不影响项目文件）
+	@limactl delete -f $(LIMA_INSTANCE)
+
 pull-android: ## 拉取 redroid 安卓镜像
 	docker pull $${REDROID_IMAGE:-redroid/redroid:13.0.0_64only-latest}
 

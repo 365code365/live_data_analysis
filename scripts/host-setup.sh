@@ -38,7 +38,7 @@ load_binder() {
     if modprobe "$mod" devices="binder,hwbinder,vndbinder" 2>/dev/null || modprobe "$mod" 2>/dev/null; then
       ok "已加载内核模块 $mod"
     else
-      warn "无法加载 $mod（可能已内建，或需要安装 linux-modules-extra-$(uname -r)）"
+      warn "无法加载 ${mod}（可能已内建，或需要安装 linux-modules-extra-$(uname -r)）"
     fi
   done
   mkdir -p /dev/binderfs 2>/dev/null
@@ -79,7 +79,7 @@ if [[ "$HOST_OS" == "Linux" ]]; then
     ok "fs.inotify.max_user_instances=$cur_max"
   fi
 else
-  warn "当前宿主机为 $HOST_OS（Docker Desktop）。控制器 / 网关 / VNC 容器可正常运行；"
+  warn "当前宿主机为 ${HOST_OS}（Docker Desktop）。控制器 / 网关 / VNC 容器可正常运行；"
   warn "redroid 依赖 Docker Desktop 虚拟机内核的 binderfs 支持，能否启动请以实际结果为准。"
   warn "验证命令： docker run --rm --privileged \$REDROID_IMAGE /system/bin/sh -c 'echo binder-ok'"
   # Docker Desktop 的 VM 里通常自带 tun
