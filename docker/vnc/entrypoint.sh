@@ -34,13 +34,31 @@ cleanup() {
 trap cleanup TERM INT
 
 # ── Xvfb ─────────────────────────────────────────────────────────────────
+# docker restart 后 /tmp 里的锁文件还在，Xvfb 会拒绝启动
+#   Fatal server error: Server is already active for display 0
+# 容器里不可能有另一个 X 在跑，直接清掉残留。
+DISPLAY_NUM="${DISPLAY#:}"
+DISPLAY_NUM="${DISPLAY_NUM%%.*}"
+if [[ -e "/tmp/.X${DISPLAY_NUM}-lock" ]]; then
+  log "清理上次残留的 X 锁文件 /tmp/.X${DISPLAY_NUM}-lock"
+  rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
+fi
+rm -f /tmp/scrcpy.log /tmp/x11vnc.log 2>/dev/null || true
+
 Xvfb "$DISPLAY" -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}" -nolisten tcp -noreset +extension GLX +render &
-CHILD_PIDS+=("$!")
+XVFB_PID=$!
+CHILD_PIDS+=("$XVFB_PID")
+xvfb_ready=0
 for i in $(seq 1 40); do
-  xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
-  sleep 0.25
+  # X socket 存在但没人监听时 xdpyinfo 会一直阻塞，必须加超时
+  if timeout 2 xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+    xvfb_ready=1
+    break
+  fi
+  kill -0 "$XVFB_PID" 2>/dev/null || { log "Xvfb 进程已退出"; break; }
+  sleep 0.5
 done
-xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { log "Xvfb 启动失败"; exit 1; }
+[[ "$xvfb_ready" == "1" ]] || { log "Xvfb 启动失败（见上方 X 服务器报错）"; exit 1; }
 log "Xvfb 就绪 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}"
 
 # ── x11vnc ───────────────────────────────────────────────────────────────
