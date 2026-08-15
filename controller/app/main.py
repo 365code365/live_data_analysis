@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -70,12 +71,25 @@ if WEB_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
 
+def _asset_version() -> str:
+    """用 css/js 的 mtime 生成版本号，改完前端刷新页面即生效，不会吃到浏览器缓存。"""
+    stamps = []
+    for name in ("style.css", "app.js"):
+        f = WEB_DIR / name
+        stamps.append(str(int(f.stat().st_mtime)) if f.exists() else "0")
+    return hashlib.md5("-".join(stamps).encode()).hexdigest()[:10]
+
+
 @app.get("/", include_in_schema=False)
 def index():  # noqa: ANN201
     index_file = WEB_DIR / "index.html"
-    if index_file.exists():
-        return FileResponse(index_file)
-    return JSONResponse({"message": "控制台未打包，请访问 /docs 使用 API"})
+    if not index_file.exists():
+        return JSONResponse({"message": "控制台未打包，请访问 /docs 使用 API"})
+    html = index_file.read_text(encoding="utf-8").replace("__ASSET_V__", _asset_version())
+    return HTMLResponse(
+        html,
+        headers={"Cache-Control": "no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 
 @app.get("/favicon.ico", include_in_schema=False)

@@ -42,7 +42,9 @@ services:
       DOCKER_HOST_ADDR: ${DOCKER_HOST_ADDR:-host.docker.internal}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data:/app/data
+      # 在 lima/虚拟机里跑时把 DATA_HOST_DIR 指到虚拟机本地盘：
+      # SQLite 在 virtiofs 共享目录上的锁语义不可靠
+      - ${DATA_HOST_DIR:-./data}:/app/data
       - ./apks:/app/apks:ro
       # 控制台前端与选择器规则挂进去：改完刷新页面 / 调 reload 接口即生效，不用重建镜像
       - ./controller/app/web:/app/app/web:ro

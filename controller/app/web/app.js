@@ -8,6 +8,7 @@
     proxies: [],
     tasks: [],
     timer: null,
+    pullTimer: null,
     dataTaskId: null,
     productKeys: [],
   };
@@ -65,9 +66,12 @@
     $('#modalTitle').textContent = title;
     $('#modalBody').innerHTML = html;
     $('#modal').hidden = false;
+    $('#modal').classList.add('open');
   }
   function closeModal() {
-    $('#modal').hidden = true;
+    const el = $('#modal');
+    el.hidden = true;
+    el.classList.remove('open');
     $('#modalBody').innerHTML = '';
   }
   $('#modalClose').addEventListener('click', closeModal);
@@ -95,9 +99,23 @@
 
   // ── 概览 ────────────────────────────────────────────────────────────
   async function loadOverview() {
-    const [stats, info, events] = await Promise.all([
+    const [stats, info, events, hostCheck] = await Promise.all([
       api('/api/stats'), api('/api/system/info'), api('/api/events?limit=30'),
+      api('/api/system/host-check').catch(() => null),
     ]);
+
+    const alertBox = $('#hostAlert');
+    if (hostCheck && hostCheck.hints && hostCheck.hints.length) {
+      alertBox.hidden = false;
+      alertBox.className = 'alert';
+      alertBox.innerHTML = `
+        <div class="alert-title">宿主环境不满足运行安卓容器的条件</div>
+        <div class="alert-body">${hostCheck.hints.map((h) => esc(h)).join('\n\n')}</div>
+        <div class="alert-meta">内核 ${esc(hostCheck.kernel)} · binder ${hostCheck.binder ? '✓' : '✗'} · tun ${hostCheck.tun ? '✓' : '✗'}</div>`;
+    } else {
+      alertBox.hidden = true;
+      alertBox.innerHTML = '';
+    }
     const labels = {
       devices: '设备', devices_running: '运行中设备', tasks: '任务', tasks_enabled: '启用任务',
       snapshots: '直播快照', products: '商品记录', recordings: '录像',
@@ -108,21 +126,95 @@
 
     $('#version').textContent = `v${info.version}`;
     const d = info.docker || {};
-    const imgs = d.images || {};
+    const details = d.image_details || [];
     const rows = [
       ['Docker', d.ok ? esc(d.server) : `<span class="badge error">不可用: ${esc(d.error || '')}</span>`],
-      ['网关镜像', imgs.gateway ? '<span class="badge ok">已就绪</span>' : '<span class="badge error">缺失 → make build-gateway</span>'],
-      ['VNC 镜像', imgs.vnc ? '<span class="badge ok">已就绪</span>' : '<span class="badge error">缺失 → make build-vnc</span>'],
-      ['安卓镜像', imgs.android ? '<span class="badge ok">已就绪</span>' : '<span class="badge error">缺失 → make pull-android</span>'],
+      ...details.map((img) => [img.label, renderImage(img)]),
       ['adb / ffmpeg', `${info.tools.adb ? 'adb ✓' : 'adb ✗'} · ${info.tools.ffmpeg ? 'ffmpeg ✓' : 'ffmpeg ✗'}`],
       ['调度器', info.scheduler.running ? `<span class="badge ok">运行中（${info.scheduler.jobs.length} 个 job）</span>` : '<span class="badge error">未运行</span>'],
-      ['安卓镜像名', esc(info.settings.redroid_image)],
       ['设备端口区间', info.settings.device_port_range.join(' - ')],
       ['选择器外挂目录', esc(info.settings.selectors_dir || '（未设置，使用内置）')],
     ];
     $('#sysInfo').innerHTML = rows.map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
     $('#overviewEvents').innerHTML = renderEvents(events.items);
+
+    // 有拉取在进行时加快刷新，让进度条动起来
+    const pulling = details.some((i) => i.job && i.job.state === 'pulling');
+    if (pulling && !state.pullTimer) {
+      state.pullTimer = setInterval(() => { if (state.view === 'overview') loadOverview().catch(() => {}); }, 1500);
+    } else if (!pulling && state.pullTimer) {
+      clearInterval(state.pullTimer);
+      state.pullTimer = null;
+    }
   }
+
+  function renderImage(img) {
+    const job = img.job;
+    const name = `<div class="img-name">${esc(img.image)}</div>`;
+
+    if (job && job.state === 'pulling') {
+      const pct = job.percent || 0;
+      return `
+        <div class="img-row">
+          <span class="badge starting">拉取中 ${pct}%</span>
+          <div class="progress"><div class="bar" style="width:${pct}%"></div></div>
+          <span class="img-sub">${job.downloaded_mb || 0} / ${job.total_mb || 0} MB · ${esc((job.message || '').slice(0, 40))}</span>
+        </div>${name}`;
+    }
+
+    if (img.ready) {
+      return `<div class="img-row"><span class="badge ok">已就绪</span>
+        <span class="img-sub">${img.size_mb ? img.size_mb + ' MB' : ''}</span></div>${name}`;
+    }
+
+    const failed = job && job.state === 'failed'
+      ? `<div class="img-err">${esc((job.error || '').slice(0, 200))}</div>` : '';
+
+    if (img.pullable) {
+      return `
+        <div class="img-row">
+          <span class="badge error">缺失</span>
+          <button class="btn small primary" data-pull="${img.target}">
+            ${job && job.state === 'failed' ? '重试拉取' : '立即拉取'}
+          </button>
+          <span class="img-sub">约 600MB-1.5GB，会在后台拉，可以关页面</span>
+        </div>${name}${failed}`;
+    }
+
+    // 网关 / VNC 是本项目自带 Dockerfile 的本地镜像，只能在宿主机构建
+    return `
+      <div class="img-row">
+        <span class="badge error">缺失</span>
+        <code class="cmd">${esc(img.hint)}</code>
+        <button class="btn small" data-copy="${esc(img.hint)}">复制命令</button>
+        <span class="img-sub">本地构建镜像，需在宿主机项目目录执行</span>
+      </div>${name}${failed}`;
+  }
+
+  $('#sysInfo').addEventListener('click', async (e) => {
+    const pullBtn = e.target.closest('button[data-pull]');
+    const copyBtn = e.target.closest('button[data-copy]');
+    if (copyBtn) {
+      const text = copyBtn.dataset.copy;
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('命令已复制', 'ok');
+      } catch (_) {
+        toast(`手动复制： ${text}`);
+      }
+      return;
+    }
+    if (!pullBtn) return;
+    pullBtn.disabled = true;
+    try {
+      await api(`/api/system/images/${pullBtn.dataset.pull}/pull`, { method: 'POST' });
+      toast('已开始拉取，进度会实时显示', 'ok');
+      await loadOverview();
+    } catch (err) {
+      toast(err.message, 'err');
+      pullBtn.disabled = false;
+    }
+  });
 
   function renderEvents(items) {
     if (!items?.length) return '<div class="line">暂无事件</div>';

@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>直播间监控控制台</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <!-- __ASSET_V__ 由后端按文件 mtime 替换，避免浏览器缓存住旧的 css/js -->
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_V__" />
 </head>
 <body>
   <header class="topbar">
@@ -31,6 +32,7 @@
   <main>
     <!-- 概览 -->
     <section class="view active" id="view-overview">
+      <div id="hostAlert" hidden></div>
       <div class="stat-grid" id="statGrid"></div>
       <div class="card">
         <h2>运行环境</h2>
@@ -182,6 +184,6 @@
   </div>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=__ASSET_V__"></script>
 </body>
 </html>

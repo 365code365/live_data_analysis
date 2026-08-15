@@ -5,12 +5,13 @@ import platform
 import shutil
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from .. import __version__
 from ..config import settings
-from ..core import scheduler
+from ..core import host, scheduler
 from ..core.docker_manager import DockerError, get_docker
+from ..core.images import images_overview, puller
 from ..platforms import list_adapters, reload_selectors
 from ..schemas import Ok
 
@@ -28,13 +29,14 @@ def info() -> dict[str, Any]:
     docker_info: dict[str, Any]
     try:
         docker = get_docker()
-        images = docker.ensure_images()
         containers = docker.list_managed()
         version = docker.client.version()
+        overview = images_overview()
         docker_info = {
             "ok": True,
             "server": f"{version.get('Os')}/{version.get('Arch')} {version.get('Version')}",
-            "images": images,
+            "images": {i["target"]: i["ready"] for i in overview},
+            "image_details": overview,
             "managed_containers": containers,
         }
     except DockerError as exc:
@@ -66,6 +68,12 @@ def info() -> dict[str, Any]:
     }
 
 
+@router.get("/host-check")
+def host_check() -> dict[str, Any]:
+    """宿主内核能力：binder（安卓容器必需）、tun（代理网关必需）。"""
+    return host.capabilities()
+
+
 @router.get("/platforms")
 def platforms() -> dict[str, Any]:
     return {"platforms": list_adapters()}
@@ -75,6 +83,31 @@ def platforms() -> dict[str, Any]:
 def reload() -> Ok:
     keys = reload_selectors()
     return Ok(message=f"已重载选择器配置: {', '.join(keys)}")
+
+
+@router.get("/images")
+def images() -> dict[str, Any]:
+    """镜像就绪情况 + 正在进行的拉取任务。"""
+    try:
+        return {"items": images_overview()}
+    except DockerError as exc:
+        return {"items": [], "error": str(exc)}
+
+
+@router.post("/images/{target}/pull")
+def pull_image(target: str) -> dict[str, Any]:
+    """在控制台里直接拉镜像（目前只有安卓镜像可拉，网关/VNC 是本地构建）。"""
+    try:
+        return puller.start(target)
+    except DockerError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(404, f"未知镜像目标: {target}") from exc
+
+
+@router.get("/images/pulls")
+def pull_status() -> dict[str, Any]:
+    return {"jobs": puller.snapshot()}
 
 
 @router.get("/containers")

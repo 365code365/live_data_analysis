@@ -31,27 +31,59 @@
 
 ## 运行要求
 
-> **重要**：redroid 需要宿主机 Linux 内核提供 `binder` 支持。
-> - **推荐**：Linux 宿主机（Ubuntu 22.04+ / Debian 12+），x86_64 或 arm64。
-> - **macOS / Windows（Docker Desktop）**：控制器、代理网关、VNC 容器都能跑；redroid 依赖 LinuxKit 内核的 binderfs，较新版本 Docker Desktop 可用，但不保证。先跑 `make check-host` 自检。
-> - arm64 宿主机跑 arm 安卓镜像性能最好（Apple Silicon / ARM 服务器）；x86_64 宿主机请用 `redroid:13.0.0-latest`（自带 houdini/ndk-translation 的商业镜像才能跑 arm-only APK）。
+安卓容器（redroid）需要宿主机 Linux 内核提供 **binder**。这是硬性前提，没有它 redroid 会秒退。
 
-宿主机准备（Linux）：
+| 宿主 | 安卓容器 | 控制器 / 代理网关 / VNC |
+| --- | --- | --- |
+| Linux（Ubuntu 22.04+ / Debian 12+，x86_64 或 arm64） | 可用 | 可用 |
+| macOS / Windows 的 Docker Desktop | **不可用**（LinuxKit 内核不含 binder，无法通过配置修复） | 可用 |
+
+控制台首页会自动检测并给出提示，也可以直接查：
 
 ```bash
-sudo ./scripts/host-setup.sh    # 加载 binder_linux / ashmem_linux，配置 tun 设备
-make check-host                 # 自检
+make check-host                              # 宿主自检
+curl -s localhost:8000/api/system/host-check # 控制器视角的内核能力
 ```
+
+Linux 宿主准备：
+
+```bash
+sudo ./scripts/host-setup.sh    # 加载 binder_linux / ashmem_linux，准备 /dev/net/tun
+```
+
+Ubuntu 上如果 `modprobe binder_linux` 报找不到模块，先装 `linux-modules-extra-$(uname -r)`。
+
+### 在 Mac 上跑完整链路
+
+开一台 Linux 虚拟机，在虚拟机里跑本项目：
+
+```bash
+brew install lima
+limactl start --name=ldm --cpus 6 --memory 12 --disk 60 template://ubuntu-24.04
+limactl shell ldm
+sudo apt-get update
+sudo apt-get install -y docker.io make linux-modules-extra-$(uname -r)
+sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
+sudo usermod -aG docker "$USER"     # 重新登录生效
+# 之后在虚拟机里 clone 本项目，正常 make build && make up
+```
+
+只在 Mac 本机开发也可以：控制器、代理网关、VNC 容器都能正常跑，代理链路和选择器规则都能调通，只是没法启动安卓实例。
+
+镜像选择：arm64 宿主用 `redroid/redroid:13.0.0_64only-latest`；x86_64 宿主用 `redroid/redroid:13.0.0-latest`
+（跑 arm-only 的 APK 需要带 houdini / ndk-translation 的镜像）。
 
 ## 快速开始
 
 ```bash
-cp .env.example .env            # 按需修改；HOST_PROJECT_DIR 必须是宿主机绝对路径
+cp .env.example .env            # 按需修改
 make build                      # 构建 gateway / vnc / controller 三个镜像
-make pull-android               # 拉取 redroid 安卓镜像
 make up                         # 启动控制器
 open http://localhost:8000      # Web 控制台
 ```
+
+安卓镜像不用敲命令：控制台首页「安卓镜像」那一行点 **立即拉取**，带进度条。
+也可以照旧 `make pull-android`。
 
 把抖音 / 小红书 APK 放进 `apks/` 目录（文件名建议 `douyin.apk`、`xiaohongshu.apk`），
 控制台 → 设备卡片 → **安装 APK** 即可推进容器。

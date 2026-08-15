@@ -142,9 +142,37 @@ label.switch input { min-width: auto; }
 .chart { height: 160px; margin: 10px 0; }
 .chart svg { width: 100%; height: 100%; }
 
+/* ── 环境告警 ─────────────────────────────────────────── */
+.alert {
+  background: #2a1c1c; border: 1px solid #5c2b2b; border-left: 4px solid var(--err);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+}
+.alert[hidden] { display: none !important; }
+.alert-title { color: var(--err); font-weight: 600; margin-bottom: 8px; }
+.alert-body { white-space: pre-wrap; font-size: 13px; line-height: 1.7; }
+.alert-meta { color: var(--muted); font-size: 12px; margin-top: 8px; font-family: ui-monospace, Menlo, monospace; }
+
+/* ── 镜像状态行 ───────────────────────────────────────── */
+.img-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.img-name { color: var(--muted); font-size: 11px; font-family: ui-monospace, Menlo, monospace; margin-top: 2px; }
+.img-sub { color: var(--muted); font-size: 11px; }
+.img-err { color: var(--err); font-size: 11px; margin-top: 4px; max-width: 640px; word-break: break-all; }
+.cmd {
+  background: #0c0f13; border: 1px solid var(--border); border-radius: 6px;
+  padding: 2px 8px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--accent);
+}
+.progress {
+  width: 220px; height: 6px; background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 999px; overflow: hidden;
+}
+.progress .bar { height: 100%; background: var(--accent); transition: width .3s ease; }
+
 /* ── 弹窗 / 提示 ──────────────────────────────────────── */
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 20px; }
-/* 作者样式会盖掉 UA 的 [hidden]{display:none}，必须显式声明，否则空弹窗常驻且关不掉 */
+/* 默认就是不显示：只有加上 .open 才出现。
+   这样即使浏览器缓存了旧 JS，也不会出现「空弹窗常驻还关不掉」。
+   同时显式覆盖 [hidden]（作者样式会盖掉 UA 的 [hidden]{display:none}）。 */
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.65); align-items: center; justify-content: center; z-index: 50; padding: 20px; }
+.modal.open { display: flex; }
 .modal[hidden], .toast[hidden] { display: none !important; }
 .modal-box { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); width: min(1000px, 100%); max-height: 88vh; display: flex; flex-direction: column; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--border); }

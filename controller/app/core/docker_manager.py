@@ -197,7 +197,9 @@ class DockerManager:
             volumes={n.volume: {"bind": "/data", "mode": "rw"}},
             command=command,
             labels=self._labels(device_id, ROLE_ANDROID),
-            restart_policy={"Name": "unless-stopped"},
+            # 用 on-failure 限次而不是 unless-stopped：内核不支持时 redroid 会秒退，
+            # 无限重启只会刷屏，限次后停下来更容易定位。
+            restart_policy={"Name": "on-failure", "MaximumRetryCount": 5},
             **kwargs,
         )
 

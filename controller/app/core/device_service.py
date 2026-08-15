@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import time
 from typing import Any, Optional
 
 from sqlmodel import Session, select
@@ -9,6 +10,7 @@ from sqlmodel import Session, select
 from ..config import settings
 from ..models import Device, DeviceStatus, ProxyProfile, utcnow
 from . import events
+from . import host
 from .android import drop_device, get_device
 from .docker_manager import DockerError, get_docker
 from .recorder import recorder
@@ -115,6 +117,17 @@ def start_device(session: Session, device: Device) -> Device:
             "缺少镜像: " + ", ".join(f"{m}（{hint.get(m, '')}）" for m in missing)
         )
 
+    # 先做内核能力预检：binder 缺失时 redroid 会秒退并无限重启，
+    # 与其让用户对着 "Restarting (129)" 猜，不如直接说清楚。
+    caps = host.capabilities()
+    if not caps["android_supported"]:
+        device.status = DeviceStatus.error
+        device.last_error = host.BINDER_HELP[:1000]
+        device.updated_at = utcnow()
+        session.add(device)
+        session.commit()
+        raise DeviceError(host.BINDER_HELP)
+
     proxy_url = _proxy_url(session, device.proxy_id)
 
     device.status = DeviceStatus.starting
@@ -144,6 +157,21 @@ def start_device(session: Session, device: Device) -> Device:
         events.emit(f"设备启动失败: {exc}", level="error", device_id=device.id)
         raise DeviceError(str(exc)) from exc
 
+    # 安卓容器起不来时会秒退，等几秒确认它真的活着再报成功
+    problem = _verify_android_alive(int(device.id))
+    if problem:
+        try:
+            get_docker().remove_stack(int(device.id))
+        except DockerError:
+            pass
+        device.status = DeviceStatus.error
+        device.last_error = problem[:1000]
+        device.updated_at = utcnow()
+        session.add(device)
+        session.commit()
+        events.emit(f"设备启动失败: {problem[:200]}", level="error", device_id=device.id)
+        raise DeviceError(problem)
+
     device.gw_container = names["gw"]
     device.android_container = names["android"]
     device.vnc_container = names["vnc"]
@@ -161,6 +189,34 @@ def start_device(session: Session, device: Device) -> Device:
         device_id=device.id,
     )
     return device
+
+
+def _verify_android_alive(device_id: int, wait_seconds: float = 8.0) -> Optional[str]:
+    """安卓容器活着返回 None，否则返回带日志的失败原因。"""
+    docker = get_docker()
+    names = docker.names(device_id)
+    deadline = time.time() + wait_seconds
+    state: Optional[str] = None
+    while time.time() < deadline:
+        state = docker.stack_status(device_id).get("android")
+        if state in {"exited", "dead", "restarting"}:
+            break
+        time.sleep(1.5)
+
+    if state not in {"exited", "dead", "restarting"}:
+        return None
+
+    logs = docker.logs(names.android, tail=30).strip()
+    reason = f"安卓容器启动后立即退出（状态 {state}）"
+    if not logs:
+        reason += "，且没有任何日志输出。"
+        if not host.capabilities()["binder"]:
+            reason += "\n" + host.BINDER_HELP
+        else:
+            reason += "\n常见原因：宿主 binder 不可用、镜像架构与宿主不匹配（arm64 宿主要用 *_64only 镜像）。"
+    else:
+        reason += f"\n容器日志：\n{logs[:800]}"
+    return reason
 
 
 def stop_device(session: Session, device: Device) -> Device:
