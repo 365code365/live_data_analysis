@@ -8,10 +8,8 @@
 minimumLimaVersion: "1.0.0"
 
 images:
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+  - location: "/Users/shengye/Library/Caches/lima/download/by-url-sha256/002fbe468673695a2206b26723b1a077a71629001a5b94efd8ea1580e1c3dd06/data"
     arch: "aarch64"
-  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
-    arch: "x86_64"
 
 cpus: 6
 memory: "8GiB"

@@ -37,6 +37,43 @@ sed -e "s|__PROJECT_DIR__|${PROJECT_DIR}|g" \
     "$PROJECT_DIR/lima/ldm.yaml.tmpl" > "$CONF"
 ok "已生成 $CONF"
 
+# 已经下载过云镜像时直接复用本地文件：
+# lima 偶发 "clonefile failed: file exists"，用本地镜像可以绕开缓存这一层，
+# 也省掉重复下载 600MB。LDM_LIMA_IMAGE 可以手动指定任意本地镜像。
+LOCAL_IMAGE="${LDM_LIMA_IMAGE:-}"
+if [[ -z "$LOCAL_IMAGE" ]]; then
+  cache_root="$HOME/Library/Caches/lima/download/by-url-sha256"
+  if [[ -d "$cache_root" ]]; then
+    while IFS= read -r urlfile; do
+      d="$(dirname "$urlfile")"
+      if grep -q "ubuntu-24.04-server-cloudimg" "$urlfile" 2>/dev/null \
+         && [[ -s "$d/data" ]] && [[ "$(stat -f%z "$d/data")" -gt 200000000 ]]; then
+        LOCAL_IMAGE="$d/data"
+        break
+      fi
+    done < <(find "$cache_root" -maxdepth 2 -name url 2>/dev/null)
+  fi
+fi
+
+if [[ -n "$LOCAL_IMAGE" && -s "$LOCAL_IMAGE" ]]; then
+  info "复用本地云镜像: $LOCAL_IMAGE ($(( $(stat -f%z "$LOCAL_IMAGE") / 1048576 ))MB)"
+  # 架构必须由 bash 的 uname 决定：Rosetta 下的 python 会把自己报成 x86_64
+  case "$(uname -m)" in
+    arm64|aarch64) HOST_ARCH="aarch64" ;;
+    x86_64|amd64)  HOST_ARCH="x86_64" ;;
+    *) die "不支持的架构: $(uname -m)" ;;
+  esac
+  python3 - "$CONF" "$LOCAL_IMAGE" "$HOST_ARCH" <<'PY'
+import re, sys, pathlib
+conf, img, arch = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+text = conf.read_text(encoding="utf-8")
+block = 'images:\n  - location: "%s"\n    arch: "%s"\n' % (img, arch)
+text = re.sub(r"images:\n(?:  - .*\n|    .*\n)+", block, text, count=1)
+conf.write_text(text, encoding="utf-8")
+print("  已把镜像来源改为本地文件 (arch=%s)" % arch)
+PY
+fi
+
 # ── 创建 / 启动 ───────────────────────────────────────────────────────────
 if limactl list --format '{{.Name}}' 2>/dev/null | grep -qx "$INSTANCE"; then
   status=$(limactl list --format '{{.Status}}' "$INSTANCE" 2>/dev/null || echo Unknown)

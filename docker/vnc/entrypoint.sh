@@ -5,6 +5,14 @@ set -uo pipefail
 log() { printf '[vnc %s] %s\n' "$(date '+%H:%M:%S')" "$*"; }
 
 DISPLAY="${DISPLAY:-:0}"; export DISPLAY
+
+# 关键：强制 SDL 走软件渲染。
+# scrcpy 默认用 OpenGL 渲染，在 Xvfb 上画面进的是 GLX 缓冲，x11vnc 抓不到，
+# 结果就是 noVNC 里一片黑（scrcpy 日志却显示一切正常）。
+# 软件渲染会把帧真正画进 X 的 framebuffer，x11vnc 才抓得到。
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-x11}"
+export SDL_RENDER_DRIVER="${SDL_RENDER_DRIVER:-software}"
+export LIBGL_ALWAYS_SOFTWARE=1
 ADB_TARGET="${ADB_TARGET:-127.0.0.1:5555}"
 SCREEN_WIDTH="${SCREEN_WIDTH:-720}"
 SCREEN_HEIGHT="${SCREEN_HEIGHT:-1280}"
@@ -87,12 +95,14 @@ run_scrcpy() {
     args=(-s "$ADB_TARGET" --window-borderless --window-x 0 --window-y 0
           --window-width "$SCREEN_WIDTH" --window-height "$SCREEN_HEIGHT"
           --stay-awake --max-fps "${SCRCPY_MAX_FPS:-30}"
-          --video-bit-rate "${SCRCPY_BITRATE:-8M}" --no-audio)
+          --video-bit-rate "${SCRCPY_BITRATE:-8M}" --no-audio
+          --render-driver=software)
   else
     args=(-s "$ADB_TARGET" --window-borderless --window-x 0 --window-y 0
           --window-width "$SCREEN_WIDTH" --window-height "$SCREEN_HEIGHT"
           --stay-awake --max-fps "${SCRCPY_MAX_FPS:-30}"
-          --bit-rate "${SCRCPY_BITRATE:-8M}")
+          --bit-rate "${SCRCPY_BITRATE:-8M}"
+          --render-driver=software)
   fi
   [[ "${SCRCPY_MAX_SIZE:-0}" != "0" ]] && args+=(--max-size "$SCRCPY_MAX_SIZE")
   log "启动 scrcpy: ${args[*]}"

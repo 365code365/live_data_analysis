@@ -72,11 +72,15 @@ provision:
 
       systemctl enable --now docker
 
-      # lima 用户加入 docker 组
-      for u in /home/*; do
-        [ -d "$u" ] || continue
-        usermod -aG docker "$(basename "$u")" || true
-      done
+      # lima 用户加入 docker 组。
+      # 注意 /home 下的目录名（shengye.linux）和用户名（shengye）不一定一致，
+      # 所以按 uid 反查，别用目录名。
+      LIMA_USER="${LIMA_CIDATA_USER:-$(getent passwd 501 | cut -d: -f1)}"
+      [ -n "$LIMA_USER" ] || LIMA_USER="$(getent passwd 1000 | cut -d: -f1)"
+      if [ -n "$LIMA_USER" ]; then
+        usermod -aG docker "$LIMA_USER"
+        echo "已把 $LIMA_USER 加入 docker 组"
+      fi
 
       # 运行期数据目录放本地盘
       mkdir -p /var/lib/ldm/data
@@ -97,9 +101,10 @@ probes:
     script: |
       #!/bin/bash
       set -eu
-      timeout 300s bash -c 'until command -v docker >/dev/null 2>&1; do sleep 3; done'
-      timeout 300s bash -c 'until docker info >/dev/null 2>&1; do sleep 3; done'
-      timeout 120s bash -c 'until grep -qw binder /proc/filesystems; do sleep 3; done'
+      # 首次启动要装内核模块包（上百 MB），给足时间
+      timeout 900s bash -c 'until command -v docker >/dev/null 2>&1; do sleep 5; done'
+      timeout 900s bash -c 'until sudo docker info >/dev/null 2>&1; do sleep 5; done'
+      timeout 300s bash -c 'until grep -qw binder /proc/filesystems; do sleep 5; done'
     hint: |
       binder 或 docker 没有就绪。进虚拟机排查：
         limactl shell __INSTANCE__ -- sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
