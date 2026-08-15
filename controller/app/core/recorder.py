@@ -47,7 +47,8 @@ class RecordingSession(threading.Thread):
         self.size = size
         self.max_duration_seconds = max_duration_seconds
 
-        self._stop = threading.Event()
+        # 注意别叫 _stop：threading.Thread 内部有同名方法，覆盖它会让 is_alive() 直接抛异常
+        self._stop_event = threading.Event()
         self._proc: Optional[subprocess.Popen] = None
         self._proc_lock = threading.Lock()
         self.segments: list[Path] = []
@@ -57,10 +58,10 @@ class RecordingSession(threading.Thread):
 
     # ── 控制 ──────────────────────────────────────────────────────────
     def request_stop(self) -> None:
-        if self._stop.is_set():
+        if self._stop_event.is_set():
             return
         log.info("录屏 %s 收到停止请求", self.recording_id)
-        self._stop.set()
+        self._stop_event.set()
         self._interrupt_remote()
 
     def _interrupt_remote(self) -> None:
@@ -89,7 +90,7 @@ class RecordingSession(threading.Thread):
 
         idx = 0
         try:
-            while not self._stop.is_set():
+            while not self._stop_event.is_set():
                 if self.max_duration_seconds and (time.time() - self.started_at) >= self.max_duration_seconds:
                     log.info("录屏 %s 达到最长时长，自动结束", self.recording_id)
                     break
@@ -114,7 +115,7 @@ class RecordingSession(threading.Thread):
 
         log.debug("录屏 %s 分段 %s 开始", self.recording_id, idx)
         with self._proc_lock:
-            if self._stop.is_set():
+            if self._stop_event.is_set():
                 return False
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         proc = self._proc
@@ -141,10 +142,10 @@ class RecordingSession(threading.Thread):
             if "not found" in low or "offline" in low or "closed" in low:
                 self.error = msg[:500] or "设备连接中断"
                 return False
-            if not self._stop.is_set():
+            if not self._stop_event.is_set():
                 time.sleep(3)
 
-        return not self._stop.is_set()
+        return not self._stop_event.is_set()
 
     def _pull(self, remote: str, local: Path) -> bool:
         try:

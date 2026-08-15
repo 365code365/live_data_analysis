@@ -53,20 +53,35 @@ sudo ./scripts/host-setup.sh    # 加载 binder_linux / ashmem_linux，准备 /d
 
 Ubuntu 上如果 `modprobe binder_linux` 报找不到模块，先装 `linux-modules-extra-$(uname -r)`。
 
-### 在 Mac 上跑完整链路
+### 在 Mac 上跑完整链路（已验证）
 
-开一台 Linux 虚拟机，在虚拟机里跑本项目：
+一条命令开一台带 binder 的 Ubuntu 虚拟机，项目目录会挂载进去，端口自动转发回 macOS：
 
 ```bash
-brew install lima
-limactl start --name=ldm --cpus 6 --memory 12 --disk 60 template://ubuntu-24.04
-limactl shell ldm
-sudo apt-get update
-sudo apt-get install -y docker.io make linux-modules-extra-$(uname -r)
-sudo modprobe binder_linux devices=binder,hwbinder,vndbinder
-sudo usermod -aG docker "$USER"     # 重新登录生效
-# 之后在虚拟机里 clone 本项目，正常 make build && make up
+brew install lima      # 已装可跳过
+make lima-up           # 建虚拟机 + 装内核模块 + 装 docker，并验证 binder
+make lima-deploy       # 在虚拟机内构建镜像并启动全部服务
 ```
+
+跑完在 Mac 浏览器直接开 `http://localhost:8000`（或你在 `.env` 里设的 `CONTROLLER_PORT`）。
+实测环境：Ubuntu 24.04 / 内核 6.8.0-137-generic，binder 可用，redroid Android 13 正常开机、
+adb 可连、noVNC 有画面、录屏产出可播放的 mp4。
+
+常用运维：
+
+```bash
+make lima-shell        # 进虚拟机
+make lima-stop         # 停虚拟机
+make lima-delete       # 删虚拟机（不动项目文件）
+```
+
+两个注意点：
+
+- **端口别撞**。lima 把虚拟机里的端口转发到 macOS 的 localhost，如果 Mac 上已有进程占用
+  8000（`lsof -nP -iTCP:8000 -sTCP:LISTEN` 查），改 `.env` 里的 `CONTROLLER_PORT`。
+  Mac 本机如果也起过一份控制器，先 `docker compose down`。
+- **数据别放共享目录**。`make lima-deploy` 会自动把 `DATA_HOST_DIR` 指到虚拟机本地盘
+  `/var/lib/ldm/data`，因为 SQLite 在 virtiofs 共享目录上的文件锁不可靠。
 
 只在 Mac 本机开发也可以：控制器、代理网关、VNC 容器都能正常跑，代理链路和选择器规则都能调通，只是没法启动安卓实例。
 
@@ -153,6 +168,31 @@ curl -s "localhost:8000/api/devices/1/logs?role=android&tail=200"
 ```
 
 redroid 常见问题是宿主内核没有 binder，见上面「运行要求」。
+
+### noVNC 能连上但是黑屏
+
+看 scrcpy 用的是哪个渲染器：
+
+```bash
+docker exec ldm_vnc_1 sh -c 'grep -i renderer /tmp/scrcpy.log'
+```
+
+必须是 `Renderer: software`。scrcpy 默认用 OpenGL，画面进的是 GLX 缓冲，
+x11vnc 抓不到，结果就是 scrcpy 日志一切正常但 noVNC 全黑。
+VNC 镜像里已经强制 `SDL_RENDER_DRIVER=software` + `--render-driver=software`。
+
+如果 scrcpy 根本没起来，看画面容器日志：
+
+```bash
+docker logs ldm_vnc_1 | grep '^\[vnc'
+```
+
+已知并已修掉的两个坑（升级镜像即可）：
+
+- `docker restart` 后 `/tmp/.X0-lock` 残留导致 Xvfb 拒绝启动，整条链路卡死
+- adb 34 的 mDNS 自动发现在受限 netns 里会把 `adb start-server` 挂死；
+  另外 redroid 的 adbd 监听 5555，落在 adb 的模拟器端口区间内，
+  用 `127.0.0.1` 连会被识别成 `emulator-5554 offline`，现在改用容器自身的非回环地址
 
 ### 采不到商品 / 采到的字段是空的
 
