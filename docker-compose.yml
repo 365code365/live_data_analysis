@@ -27,7 +27,8 @@ services:
       RECORD_SEGMENT_SECONDS: ${RECORD_SEGMENT_SECONDS:-170}
       RECORD_BITRATE: ${RECORD_BITRATE:-4000000}
       RECORD_KEEP_SEGMENTS: ${RECORD_KEEP_SEGMENTS:-false}
-      GATEWAY_DNS_UPSTREAM: ${GATEWAY_DNS_UPSTREAM:-https://1.1.1.1/dns-query}
+      GATEWAY_DNS_UPSTREAM: ${GATEWAY_DNS_UPSTREAM:-https://1.1.1.1/dns-query,tls://1.1.1.1}
+      GATEWAY_DNS_FALLBACK: ${GATEWAY_DNS_FALLBACK:-tcp://1.1.1.1:53,tcp://8.8.8.8:53}
       # 控制器容器内访问设备 adb 的宿主地址
       DOCKER_HOST_ADDR: ${DOCKER_HOST_ADDR:-host.docker.internal}
     volumes:

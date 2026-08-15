@@ -1,6 +1,9 @@
 # 安卓画面容器：Xvfb 虚拟屏 + scrcpy 投屏 + x11vnc + noVNC
 # 与 redroid 容器共享同一 netns，所以直接连 127.0.0.1:5555 拿画面。
-FROM debian:bookworm-slim
+#
+# 基础镜像用 ubuntu 24.04：Debian bookworm/trixie 都没有 scrcpy 包，
+# ubuntu universe 里有（1.25），省掉从源码编译的一大堆依赖。
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -9,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         scrcpy adb \
         novnc websockify \
         fonts-noto-cjk \
-        procps net-tools iproute2 curl ca-certificates tini \
+        procps iproute2 curl ca-certificates tini \
     && ln -sf /usr/share/novnc/vnc.html /usr/share/novnc/index.html \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 

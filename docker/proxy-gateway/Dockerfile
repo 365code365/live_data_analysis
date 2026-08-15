@@ -40,7 +40,8 @@ COPY egress-ip.sh /usr/local/bin/egress-ip
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/egress-ip
 
 ENV PROXY_URL="" \
-    DNS_UPSTREAM="https://1.1.1.1/dns-query" \
+    DNS_UPSTREAM="https://1.1.1.1/dns-query,tls://1.1.1.1" \
+    DNS_FALLBACK="tcp://1.1.1.1:53,tcp://8.8.8.8:53" \
     DNS_BOOTSTRAP="1.1.1.1:53,8.8.8.8:53" \
     TUN_NAME="tun0" \
     TUN_ADDR="198.18.0.1" \

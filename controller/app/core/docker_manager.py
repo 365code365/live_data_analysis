@@ -155,6 +155,7 @@ class DockerManager:
         env = {
             "PROXY_URL": proxy_url or "",
             "DNS_UPSTREAM": settings.gateway_dns_upstream,
+            "DNS_FALLBACK": settings.gateway_dns_fallback,
             "KILL_SWITCH": "true" if (settings.gateway_kill_switch and proxy_url) else "false",
         }
         log.info("启动网关 %s proxy=%s", n.gw, _mask(proxy_url))
@@ -302,6 +303,7 @@ class DockerManager:
             environment={
                 "PROXY_URL": proxy_url,
                 "DNS_UPSTREAM": settings.gateway_dns_upstream,
+                "DNS_FALLBACK": settings.gateway_dns_fallback,
                 "KILL_SWITCH": "false",
             },
             cap_add=["NET_ADMIN"],

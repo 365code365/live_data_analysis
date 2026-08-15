@@ -50,7 +50,10 @@ class Settings(BaseSettings):
     record_keep_segments: bool = False
 
     # ── 网关 ──────────────────────────────────────────────────────────
-    gateway_dns_upstream: str = "https://1.1.1.1/dns-query"
+    # 主上游走加密 DNS；部分网络会封 DoH/DoT，用 fallback 的 TCP 明文兜底
+    # （兜底同样经 tun→代理出去，不会泄漏真实 IP）
+    gateway_dns_upstream: str = "https://1.1.1.1/dns-query,tls://1.1.1.1"
+    gateway_dns_fallback: str = "tcp://1.1.1.1:53,tcp://8.8.8.8:53"
     gateway_kill_switch: bool = True
 
     # ── 派生路径 ──────────────────────────────────────────────────────
