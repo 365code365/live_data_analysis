@@ -1,0 +1,14 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlmodel==0.0.22
+pydantic==2.10.4
+pydantic-settings==2.7.1
+docker==7.1.0
+adbutils==2.8.10
+uiautomator2==3.2.5
+APScheduler==3.11.0
+httpx==0.28.1
+Pillow==11.1.0
+PyYAML==6.0.2
+python-multipart==0.0.20
+lxml==5.3.0

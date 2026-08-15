@@ -1,0 +1,45 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: docker/controller/Dockerfile
+    image: ldm/controller:latest
+    container_name: ldm_controller
+    restart: unless-stopped
+    ports:
+      - "${CONTROLLER_PORT:-8000}:8000"
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/app.db}
+      GATEWAY_IMAGE: ${GATEWAY_IMAGE:-ldm/proxy-gateway:latest}
+      VNC_IMAGE: ${VNC_IMAGE:-ldm/android-vnc:latest}
+      REDROID_IMAGE: ${REDROID_IMAGE:-redroid/redroid:13.0.0_64only-latest}
+      DEVICE_WIDTH: ${DEVICE_WIDTH:-720}
+      DEVICE_HEIGHT: ${DEVICE_HEIGHT:-1280}
+      DEVICE_DPI: ${DEVICE_DPI:-320}
+      REDROID_GPU_MODE: ${REDROID_GPU_MODE:-guest}
+      DEVICE_PORT_BASE: ${DEVICE_PORT_BASE:-21000}
+      DEVICE_PORT_MAX: ${DEVICE_PORT_MAX:-21999}
+      DOCKER_NETWORK: ${DOCKER_NETWORK:-ldm_net}
+      DEFAULT_INTERVAL_SECONDS: ${DEFAULT_INTERVAL_SECONDS:-60}
+      MAX_CONCURRENT_TASKS: ${MAX_CONCURRENT_TASKS:-8}
+      SELECTORS_DIR: ${SELECTORS_DIR:-}
+      RECORD_SEGMENT_SECONDS: ${RECORD_SEGMENT_SECONDS:-170}
+      RECORD_BITRATE: ${RECORD_BITRATE:-4000000}
+      RECORD_KEEP_SEGMENTS: ${RECORD_KEEP_SEGMENTS:-false}
+      GATEWAY_DNS_UPSTREAM: ${GATEWAY_DNS_UPSTREAM:-https://1.1.1.1/dns-query}
+      # 控制器容器内访问设备 adb 的宿主地址
+      DOCKER_HOST_ADDR: ${DOCKER_HOST_ADDR:-host.docker.internal}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+      - ./apks:/app/apks:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - ldm_net
+
+networks:
+  ldm_net:
+    name: ${DOCKER_NETWORK:-ldm_net}
+    driver: bridge

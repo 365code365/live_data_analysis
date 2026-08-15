@@ -1,0 +1,170 @@
+# 抖音直播间采集规则
+# App 改版后只需要改这个文件（或用 SELECTORS_DIR 外挂同名文件覆盖），不用改代码。
+# region 一律是 [x0, y0, x1, y1] 的屏幕比例；patterns 是 Python 正则，第 1 个捕获组为取值。
+package: com.ss.android.ugc.aweme
+package_alternatives:
+  - com.ss.android.ugc.aweme.lite
+  - com.ss.android.ugc.live
+
+launch:
+  wait_seconds: 12
+  room_id_deeplinks:
+    - 'snssdk1128://live?room_id={target}'
+    - 'snssdk1128://webcast_room?room_id={target}'
+    - 'snssdk1128://live_audience?room_id={target}'
+  web_rid_deeplinks:
+    - 'snssdk1128://live?web_rid={target}'
+    - 'snssdk1128://webcast_room?web_rid={target}'
+  sec_uid_deeplinks:
+    - 'snssdk1128://user/profile/{target}'
+  deeplinks:
+    - 'snssdk1128://live?room_id={target}'
+
+popups:
+  dismiss_texts:
+    - '^我知道了$'
+    - '^继续观看$'
+    - '^以后再说$'
+    - '^暂不'
+    - '^取消$'
+    - '^关闭$'
+    - '^允许$'
+    - '^同意$'
+    - '^跳过$'
+    - '^稍后再说$'
+
+live_info:
+  # 判定「确实在直播间里」的特征文案
+  room_markers:
+    - '说点什么'
+    - '发评论'
+    - '购物袋'
+    - '小黄车'
+    - '为主播点赞'
+    - '点亮'
+  end_markers:
+    - '直播已结束'
+    - '主播已下播'
+    - '直播结束'
+    - '看看其他直播'
+    - '回到首页'
+  viewer_region: [0.35, 0.0, 1.0, 0.13]
+  viewer_patterns:
+    - '([\d.,]+[万亿wW]?)\s*人?(?:在线|观看|人气)'
+    - '在线\s*([\d.,]+[万亿wW]?)'
+    - '人气\s*([\d.,]+[万亿wW]?)'
+  viewer_fallback_patterns:
+    - '([\d.,]+[万亿wW]?)\s*人(?:次)?(?:看过|观看|来过)'
+  like_patterns:
+    - '([\d.,]+[万亿wW]?)\s*(?:个?赞|点赞)'
+  follower_patterns:
+    - '粉丝\s*([\d.,]+[万亿wW]?)'
+    - '粉丝团\s*([\d.,]+[万亿wW]?)'
+  anchor:
+    region: [0.0, 0.0, 0.62, 0.12]
+    near_text: '关注'
+    patterns:
+      - '主播(?:昵称)?[:：]\s*(.+)'
+  title:
+    region: [0.0, 0.02, 1.0, 0.22]
+    min_len: 4
+  room_id_patterns:
+    - '(?:房间号|直播间号)[:：]?\s*(\d+)'
+  noise_patterns:
+    - '^\+?关注$'
+    - '^分享$'
+    - '^举报$'
+    - '^更多$'
+    - '^粉丝团$'
+    - '^排行榜$'
+    - '^榜$'
+    - '^PK$'
+    - '^福袋$'
+    - '^红包$'
+    - '^礼物$'
+    - '^说点什么$'
+    - '^发评论$'
+    - '^在线$'
+    - '^小时榜$'
+
+products:
+  entry:
+    text_patterns:
+      - '购物袋'
+      - '^小黄车$'
+      - '^商品$'
+      - '^\d+件商品$'
+      - '^去购物$'
+      - '^好物$'
+    region: [0.55, 0.5, 1.0, 0.98]
+    # 找不到控件时按经验位置盲点（右下角购物袋）
+    fallback_regions:
+      - [0.86, 0.70, 0.99, 0.80]
+      - [0.86, 0.60, 0.99, 0.70]
+      - [0.86, 0.79, 0.99, 0.89]
+  panel_markers:
+    - '^全部商品$'
+    - '商品列表'
+    - '^宝贝$'
+    - '^讲解中$'
+    - '^去看看$'
+    - '^立即购买$'
+    - '^去抢购$'
+    - '已售'
+  list_region: [0.0, 0.22, 1.0, 1.0]
+  price_patterns:
+    - '[¥￥]\s?([\d,]+(?:\.\d+)?)'
+    - '([\d,]+(?:\.\d+)?)\s?元'
+    - '券后\s?[¥￥]?\s?([\d,]+(?:\.\d+)?)'
+  sales_patterns:
+    - '(已售\s?[\d.,]+[万wW]?\+?)'
+    - '(销量\s?[\d.,]+[万wW]?\+?)'
+    - '([\d.,]+[万wW]?\+?人(?:已)?(?:买|拍|抢))'
+  stock_patterns:
+    - '(仅剩\s?\d+\s?件?)'
+    - '(库存\s?\d+)'
+    - '(已抢光)'
+    - '(售罄)'
+  coupon_patterns:
+    - '(券后[\d.,]+)'
+    - '(立减[\d.,]+)'
+    - '(\d+元(?:优惠)?券)'
+    - '(限时[\d.,]+)'
+  product_id_patterns:
+    - '(?:商品|货号)\s?(?:id|ID|编号)?[:：]?\s?(\d{8,})'
+  ignore_patterns:
+    - '^去(?:看看|抢购|购买|下单)$'
+    - '^立即(?:购买|抢购|下单)$'
+    - '^讲解中$'
+    - '^加购$'
+    - '^\d+$'
+    - '^已售'
+    - '^仅剩'
+    - '^库存'
+    - '^券后'
+    - '^立减'
+    - '^全部商品$'
+    - '^推荐$'
+    - '^分享$'
+    - '^包邮$'
+    - '^自营$'
+  title_min_len: 4
+  max_scrolls: 8
+  min_card_width_ratio: 0.35
+  max_ancestor_climb: 7
+  panel_open_seconds: 3.0
+  scroll_settle_seconds: 1.2
+  swipe_duration_ms: 500
+
+comments:
+  region: [0.0, 0.52, 0.78, 0.92]
+  min_len: 2
+  ignore_patterns:
+    - '^说点什么$'
+    - '^发评论$'
+    - '来了$'
+    - '^点亮'
+    - '关注了主播$'
+    - '加入了粉丝团$'
+    - '送出'
+    - '^分享$'
