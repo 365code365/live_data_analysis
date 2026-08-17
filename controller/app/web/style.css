@@ -167,6 +167,45 @@ label.switch input { min-width: auto; }
 }
 .progress .bar { height: 100%; background: var(--accent); transition: width .3s ease; }
 
+/* ── 录像播放器 ───────────────────────────────────────── */
+.player {
+  width: 100%; max-height: 60vh; background: #000;
+  border: 1px solid var(--border); border-radius: 8px; display: block;
+}
+
+/* ── 套餐卡片 ─────────────────────────────────────────── */
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.plan {
+  position: relative;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px 18px;
+  display: flex; flex-direction: column;
+}
+.plan:hover { border-color: var(--accent); }
+.plan h3 { margin: 0 0 10px; font-size: 17px; }
+.plan-badge {
+  position: absolute; top: 12px; right: 12px;
+  background: var(--accent); color: #06101c;
+  font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px;
+}
+.plan-price { font-size: 28px; font-weight: 600; color: var(--accent); }
+.plan-cycle { font-size: 13px; color: var(--muted); font-weight: 400; }
+.plan-origin { color: var(--muted); text-decoration: line-through; font-size: 13px; margin-top: 2px; }
+.plan-desc { color: var(--muted); font-size: 13px; margin: 10px 0; min-height: 34px; }
+.plan-spec { list-style: none; padding: 0; margin: 0 0 14px; font-size: 12.5px; }
+.plan-spec li { padding: 4px 0; border-bottom: 1px dashed var(--border); color: var(--text); }
+.plan-spec li:last-child { border-bottom: 0; }
+.plan .form-row { margin-top: auto; }
+
+/* ── 支付弹窗 ─────────────────────────────────────────── */
+.pay-box { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+.pay-qr { width: 220px; height: 220px; background: #fff; border-radius: 10px; padding: 6px; }
+.pay-info { display: flex; flex-direction: column; gap: 6px; }
+.pay-amount { font-size: 26px; font-weight: 600; color: var(--accent); }
+
+/* 后台表格里的可编辑单元格 */
+input.cell { width: 76px; padding: 3px 6px; font-size: 12px; min-width: 0; }
+
 /* ── 弹窗 / 提示 ──────────────────────────────────────── */
 /* 默认就是不显示：只有加上 .open 才出现。
    这样即使浏览器缓存了旧 JS，也不会出现「空弹窗常驻还关不掉」。

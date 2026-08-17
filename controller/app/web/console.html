@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>设备控制台</title>
+  <link rel="stylesheet" href="/static/style.css?v=__ASSET_V__" />
+  <link rel="stylesheet" href="/static/console.css?v=__ASSET_V__" />
+</head>
+<body class="console-body">
+  <header class="topbar">
+    <div class="brand">
+      <span class="dot" id="liveDot"></span>
+      <h1 id="devName">设备控制台</h1>
+      <span class="sub" id="devMeta"></span>
+    </div>
+    <div class="actions">
+      <label class="switch"><input type="checkbox" id="audioOn" /> 声音</label>
+      <input type="range" id="webVolume" min="0" max="100" value="80" title="网页播放音量" />
+      <span class="sub" id="webVolumeLabel">80%</span>
+      <a class="btn ghost" href="/">返回控制台</a>
+    </div>
+  </header>
+
+  <main class="console-layout">
+    <!-- 屏幕 -->
+    <section class="screen-pane">
+      <div class="screen-frame" id="screenFrame">
+        <iframe id="vncFrame" title="设备屏幕" allow="clipboard-read; clipboard-write"></iframe>
+        <div class="screen-mask" id="screenMask">
+          <div class="mask-inner">
+            <div class="mask-title" id="maskTitle">正在连接设备…</div>
+            <div class="mask-body" id="maskBody"></div>
+            <button class="btn small" id="maskRetry">重试</button>
+          </div>
+        </div>
+      </div>
+      <!-- 安卓三大金刚 + 常用键，直接打在屏幕下方，跟真机一致 -->
+      <div class="navbar">
+        <button class="navbtn" data-key="KEYCODE_APP_SWITCH" title="最近任务">▢</button>
+        <button class="navbtn" data-key="KEYCODE_HOME" title="主页">○</button>
+        <button class="navbtn" data-key="KEYCODE_BACK" title="返回">◁</button>
+      </div>
+    </section>
+
+    <!-- 右侧操作区 -->
+    <aside class="side-pane">
+      <div class="card compact">
+        <h2>设备状态</h2>
+        <div class="kv" id="devStatus"></div>
+      </div>
+
+      <div class="card compact">
+        <h2>快捷操作</h2>
+        <div class="btn-grid">
+          <button class="btn small" data-key="KEYCODE_POWER">电源</button>
+          <button class="btn small" data-key="KEYCODE_MENU">菜单</button>
+          <button class="btn small" data-key="KEYCODE_ENTER">回车</button>
+          <button class="btn small" data-key="KEYCODE_DEL">退格</button>
+          <button class="btn small" data-key="KEYCODE_TAB">Tab</button>
+          <button class="btn small" data-key="KEYCODE_ESCAPE">Esc</button>
+          <button class="btn small" id="btnRotate">旋转屏幕</button>
+          <button class="btn small" id="btnShot">截图</button>
+          <button class="btn small" id="btnWake">唤醒</button>
+          <button class="btn small" id="btnRecord">开始录屏</button>
+        </div>
+      </div>
+
+      <div class="card compact">
+        <h2>设备音量</h2>
+        <div class="form-row tight">
+          <button class="btn small" data-vol="down">－</button>
+          <input type="range" id="devVolume" min="0" max="15" value="8" />
+          <button class="btn small" data-vol="up">＋</button>
+          <button class="btn small" data-vol="mute">静音</button>
+        </div>
+        <p class="hint" id="devVolumeHint">拖动即写入设备的媒体音量</p>
+      </div>
+
+      <div class="card compact">
+        <h2>粘贴外部文本</h2>
+        <textarea id="pasteText" rows="3" placeholder="把要输入到安卓里的内容粘到这里，支持中文"></textarea>
+        <div class="form-row tight">
+          <button class="btn small primary" id="btnPaste">粘贴到设备</button>
+          <button class="btn small" id="btnPasteEnter">粘贴并回车</button>
+        </div>
+        <p class="hint" id="pasteHint">优先走安卓原生剪贴板；不可用时会提示装 ADBKeyboard</p>
+      </div>
+
+      <div class="card compact">
+        <h2>应用</h2>
+        <div class="form-row tight">
+          <select id="catalogSelect"></select>
+          <button class="btn small primary" id="btnInstallCatalog">下载安装</button>
+        </div>
+        <div class="form-row tight">
+          <input type="text" id="apkUrl" placeholder="或粘贴 apk 直链" />
+          <button class="btn small" id="btnInstallUrl">安装</button>
+        </div>
+        <div class="form-row tight">
+          <input type="file" id="apkFile" accept=".apk" />
+          <button class="btn small" id="btnUpload">上传并安装</button>
+        </div>
+        <div id="appJob" class="job" hidden>
+          <div class="progress"><div class="bar" id="appJobBar"></div></div>
+          <div class="img-sub" id="appJobMsg"></div>
+        </div>
+        <table class="table small" id="appTable">
+          <thead><tr><th>已安装</th><th>操作</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </aside>
+  </main>
+
+  <audio id="audioEl" preload="none"></audio>
+  <div class="modal" id="modal" hidden>
+    <div class="modal-box">
+      <div class="modal-head"><h3 id="modalTitle"></h3><button class="btn ghost" id="modalClose">关闭</button></div>
+      <div class="modal-body" id="modalBody"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/console.js?v=__ASSET_V__"></script>
+</body>
+</html>

@@ -1,0 +1,41 @@
+# 应用目录（控制台里的「应用商店」）
+#
+# url 为直链 apk 地址，控制台点一下就会下载并安装。
+# 抖音 / 小红书这类应用官方不提供稳定直链（版本号常变、按渠道分发），
+# 所以这里只给官方下载页；你有直链时填进 url 即可，或者直接用「上传 APK」。
+#
+# 想改这个目录不用重新构建镜像：
+#   1) 直接改本文件（compose 已把 controller/app 挂载进容器时立即生效）
+#   2) 或设置 APPS_CATALOG_FILE 指向你自己的 yaml
+apps:
+  - key: fdroid
+    name: F-Droid
+    package: org.fdroid.fdroid
+    category: 应用商店
+    url: https://f-droid.org/F-Droid.apk
+    note: 开源应用商店。装上之后可以在安卓里自行搜索安装开源应用。
+
+  - key: adbkeyboard
+    name: ADBKeyboard（中文粘贴支持）
+    package: com.android.adbkeyboard
+    category: 工具
+    url: https://github.com/senzhk/ADBKeyBoard/raw/master/ADBKeyboard.apk
+    note: >-
+      装完后到设备的「设置 → 系统 → 语言和输入法」里把 ADBKeyboard 选为当前输入法。
+      这样控制台的「粘贴文本」在原生剪贴板通道不可用时也能输入中文。
+
+  - key: douyin
+    name: 抖音
+    package: com.ss.android.ugc.aweme
+    category: 直播平台
+    url: ""
+    page: https://www.douyin.com/download
+    note: 官方无稳定直链。到官网下载 apk 后用「上传 APK」，或把拿到的直链填进 url。
+
+  - key: xiaohongshu
+    name: 小红书
+    package: com.xingin.xhs
+    category: 直播平台
+    url: ""
+    page: https://www.xiaohongshu.com/hina/download
+    note: 官方无稳定直链。到官网下载 apk 后用「上传 APK」，或把拿到的直链填进 url。

@@ -230,6 +230,19 @@
     $('#deviceProxySelect').innerHTML = '<option value="">直连（不用代理）</option>' +
       proxies.filter((p) => p.enabled).map((p) => `<option value="${p.id}">${esc(p.name)} · ${esc(p.url_masked)}</option>`).join('');
 
+    // 已购权益对应的套餐可以直接用来开设备（value 是 plan_id）
+    try {
+      const [summary, plans] = await Promise.all([
+        api('/api/billing/summary'),
+        api('/api/billing/plans?include_disabled=true'),
+      ]);
+      const idByCode = Object.fromEntries(plans.items.map((p) => [p.code, p.id]));
+      const usable = (summary.active_entitlements || []).filter((e) => e.remaining_devices > 0);
+      $('#devicePlanSelect').innerHTML = '<option value="">不绑定（自用）</option>' + usable
+        .map((e) => `<option value="${idByCode[e.plan_code] || ''}">${esc(e.plan_name)}（剩 ${e.remaining_devices} 台）</option>`)
+        .join('');
+    } catch (_) { /* 计费不可用时忽略，设备仍可自由创建 */ }
+
     if (!devices.length) {
       $('#deviceList').innerHTML = '<div class="card">还没有设备。先在上面创建一台，再用 VNC 装 APK、登录账号。</div>';
       return;
@@ -251,22 +264,22 @@
         <div class="kv">
           <div class="k">容器</div><div class="v">${dot('gw', '网关')} ${dot('android', '安卓')} ${dot('vnc', '画面')}</div>
           <div class="k">分辨率</div><div class="v">${d.width}×${d.height} @${d.dpi}dpi</div>
+          <div class="k">规格</div><div class="v">${d.memory_mb ? d.memory_mb + 'MB' : '内存不限'} · ${d.cpu_limit ? d.cpu_limit + ' 核' : 'CPU 不限'}${d.entitlement_id ? ` · <span class="badge ok">套餐 #${d.entitlement_id}</span>` : ''}</div>
           <div class="k">代理</div><div class="v">${d.proxy_name ? esc(d.proxy_name) + ' · ' + esc(d.proxy_url_masked) : '直连'}</div>
           <div class="k">出口 IP</div><div class="v">${d.egress_ip ? esc(d.egress_ip) + (d.egress_region ? ' (' + esc(d.egress_region) + ')' : '') : '未检测'}</div>
-          <div class="k">adb</div><div class="v">${esc(d.adb_addr)}（宿主 ${d.adb_port}）</div>
-          <div class="k">noVNC</div><div class="v">${d.novnc_port}</div>
+          <div class="k">端口</div><div class="v">adb ${d.adb_port} · noVNC ${d.novnc_port} · 声音 ${d.audio_port || '未分配'}</div>
           ${d.last_error ? `<div class="k">最近错误</div><div class="v" style="color:var(--err)">${esc(d.last_error)}</div>` : ''}
         </div>
         <div class="btns">
+          <a class="btn small primary" href="/console?device=${d.id}" target="_blank" rel="noopener">打开控制台</a>
           ${d.status === 'running'
             ? `<button class="btn small" data-act="stop">停止</button><button class="btn small" data-act="restart">重启</button>`
             : `<button class="btn small primary" data-act="start">启动</button>`}
-          <button class="btn small" data-act="vnc">VNC</button>
+          <button class="btn small" data-act="vnc">裸 VNC</button>
           <button class="btn small" data-act="status">状态</button>
           <button class="btn small" data-act="egress">查出口IP</button>
           <button class="btn small" data-act="shot">截图</button>
           <button class="btn small" data-act="ui">UI Dump</button>
-          <button class="btn small" data-act="apk">安装 APK</button>
           ${d.recording
             ? `<button class="btn small" data-act="recstop">停止录屏</button>`
             : `<button class="btn small" data-act="recstart">开始录屏</button>`}
@@ -361,16 +374,6 @@
         modal('当前界面控件', `<pre class="log">${esc(JSON.stringify(s, null, 2))}</pre>`);
         return;
       }
-      case 'apk': {
-        const apks = await api('/api/devices/apks');
-        if (!apks.length) { toast('apks/ 目录里没有 apk 文件，先放进去', 'err'); return; }
-        const name = prompt(`可安装：\n${apks.map((a) => `${a.filename} (${a.size_mb}MB)`).join('\n')}\n\n输入要安装的文件名：`, apks[0].filename);
-        if (!name) return;
-        toast('正在安装，大包可能要一两分钟…');
-        const r = await api(`/api/devices/${id}/apk/install`, { method: 'POST', body: { filename: name } });
-        toast(r.message || '安装完成', 'ok');
-        return;
-      }
       case 'recstart': {
         const r = await api(`/api/devices/${id}/record/start`, { method: 'POST', body: {} });
         toast(`已开始录屏（recording ${r.recording_id}）`, 'ok');
@@ -404,6 +407,8 @@
       height: f.get('height') ? Number(f.get('height')) : null,
       dpi: f.get('dpi') ? Number(f.get('dpi')) : null,
       proxy_id: f.get('proxy_id') ? Number(f.get('proxy_id')) : null,
+      plan_id: f.get('plan_id') ? Number(f.get('plan_id')) : null,
+      enable_audio: f.get('enable_audio') === 'on',
       autostart: f.get('autostart') === 'on',
     };
     try {
@@ -652,28 +657,380 @@
     $('#recordingTable tbody').innerHTML = r.items.map((x) => `
       <tr data-id="${x.id}">
         <td>${x.id}</td>
-        <td>${x.task_id ?? '-'}</td>
-        <td>${x.device_id ?? '-'}</td>
-        <td><span class="badge ${x.status}">${x.status}</span>${x.error ? `<br><span style="color:var(--err);font-size:11px">${esc(x.error.slice(0, 80))}</span>` : ''}</td>
+        <td>${x.task_id ? '任务' + x.task_id : '手动'}<br><span class="img-sub">设备 ${x.device_id ?? '-'}</span></td>
+        <td><span class="badge ${x.status}">${x.status}</span>${x.error ? `<br><span style="color:var(--err);font-size:11px">${esc(x.error.slice(0, 60))}</span>` : ''}</td>
         <td>${fmtTime(x.started_at)}</td>
         <td>${fmtDur(x.duration_seconds)}</td>
-        <td>${x.size_mb ? x.size_mb + ' MB' : '-'}</td>
-        <td>${x.segment_count}</td>
+        <td>${x.size_mb ? x.size_mb + ' MB' : '-'}<br><span class="img-sub">${x.segment_count} 段</span></td>
         <td>
+          ${x.downloadable ? `<button class="btn small primary" data-act="play">播放</button>` : ''}
           ${x.downloadable ? `<a class="btn small" href="/api/recordings/${x.id}/download">下载</a>` : ''}
           <button class="btn small danger" data-act="delete">删除</button>
         </td>
-      </tr>`).join('') || '<tr><td colspan="9">还没有录像</td></tr>';
+      </tr>`).join('') || '<tr><td colspan="7">还没有录像</td></tr>';
+  }
+
+  function playRecording(id) {
+    const player = $('#player');
+    // 用 stream 接口，服务端支持 Range，拖进度不用先下完整个文件
+    player.src = `/api/recordings/${id}/stream`;
+    $('#playerTitle').textContent = `#${id}`;
+    player.play().catch(() => { /* 需要用户手动点一下播放，正常 */ });
+    player.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   $('#recordingTable').addEventListener('click', async (e) => {
-    const btn = e.target.closest('button[data-act="delete"]');
+    const btn = e.target.closest('button[data-act]');
     if (!btn) return;
+    const id = btn.closest('tr').dataset.id;
+    if (btn.dataset.act === 'play') { playRecording(id); return; }
     if (!confirm('删除该录像及文件？')) return;
     try {
-      await api(`/api/recordings/${btn.closest('tr').dataset.id}`, { method: 'DELETE' });
+      await api(`/api/recordings/${id}`, { method: 'DELETE' });
+      if ($('#player').src.includes(`/${id}/stream`)) { $('#player').removeAttribute('src'); $('#player').load(); }
       toast('已删除', 'ok');
       await loadRecordings();
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  // ── 应用 ────────────────────────────────────────────────────────────
+  async function loadAppsPage() {
+    const [cat, local, devices] = await Promise.all([
+      api('/api/apps/catalog'), api('/api/apps/local'), api('/api/devices'),
+    ]);
+    state.devices = devices;
+
+    const opts = devices.map((d) => `<option value="${d.id}">${esc(d.name)} (${d.status})</option>`).join('');
+    const sel = $('#apkTargetDevice');
+    if (sel.innerHTML !== opts) sel.innerHTML = opts || '<option value="">没有设备</option>';
+
+    const devSelect = (cls) => `<select class="${cls}">${devices
+      .filter((d) => d.status === 'running')
+      .map((d) => `<option value="${d.id}">${esc(d.name)}</option>`).join('') || '<option value="">无运行设备</option>'}</select>`;
+
+    $('#catalogTable tbody').innerHTML = cat.items.map((a) => `
+      <tr data-key="${esc(a.key)}">
+        <td>${esc(a.name)}<br><span class="img-sub">${esc(a.category)}</span></td>
+        <td class="wrap"><span class="img-sub">${esc(a.package || '-')}</span></td>
+        <td>${a.installable
+          ? '<span class="badge ok">有直链</span>'
+          : `<span class="badge error">需自备</span>${a.page ? `<br><a class="img-sub" href="${esc(a.page)}" target="_blank" rel="noopener">官方下载页</a>` : ''}`}</td>
+        <td>${a.installable
+          ? `${devSelect('cat-dev')} <button class="btn small primary" data-act="install">安装</button>`
+          : `<button class="btn small" data-act="why">说明</button>`}</td>
+      </tr>`).join('') || '<tr><td colspan="4">目录为空</td></tr>';
+    $('#catalogFileHint').textContent = `目录文件：${cat.catalog_file}（改完调用 /api/system/selectors/reload 无需重启）`;
+    state.catalog = cat.items;
+
+    $('#localApkTable tbody').innerHTML = local.items.map((f) => `
+      <tr data-file="${esc(f.filename)}">
+        <td class="wrap">${esc(f.filename)}</td>
+        <td>${f.size_mb} MB</td>
+        <td>${devSelect('local-dev')} <button class="btn small primary" data-act="install">安装</button>
+            <button class="btn small danger" data-act="delete">删除</button></td>
+      </tr>`).join('') || '<tr><td colspan="3">还没有上传安装包</td></tr>';
+  }
+
+  $('#catalogTable').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const tr = btn.closest('tr');
+    const key = tr.dataset.key;
+    if (btn.dataset.act === 'why') {
+      const item = (state.catalog || []).find((i) => i.key === key);
+      modal(`${item?.name || key}`, `<div class="alert" style="margin:0">
+        <div class="alert-title">这个应用没有稳定直链</div>
+        <div class="alert-body">${esc(item?.note || '')}</div>
+        ${item?.page ? `<p class="hint">官方下载页：<a href="${esc(item.page)}" target="_blank" rel="noopener">${esc(item.page)}</a></p>` : ''}
+        <p class="hint">下载到本地后用上方「上传安装包」，或把直链写进目录文件的 url 字段。</p></div>`);
+      return;
+    }
+    const devId = tr.querySelector('.cat-dev')?.value;
+    if (!devId) { toast('没有处于运行状态的设备', 'err'); return; }
+    try {
+      await api(`/api/devices/${devId}/apps/install`, { method: 'POST', body: { source: 'catalog', key } });
+      toast('已提交安装任务，进度在设备控制台里看', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  $('#localApkTable').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const tr = btn.closest('tr');
+    const filename = tr.dataset.file;
+    try {
+      if (btn.dataset.act === 'delete') {
+        if (!confirm(`删除 ${filename}？`)) return;
+        await api(`/api/apps/local/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        toast('已删除', 'ok');
+        await loadAppsPage();
+        return;
+      }
+      const devId = tr.querySelector('.local-dev')?.value;
+      if (!devId) { toast('没有处于运行状态的设备', 'err'); return; }
+      await api(`/api/devices/${devId}/apps/install`, { method: 'POST', body: { source: 'local', filename } });
+      toast('已提交安装任务', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  async function uploadApk(install) {
+    const f = $('#apkFileGlobal').files[0];
+    if (!f) { toast('先选一个 apk 文件', 'err'); return; }
+    const btn = install ? $('#btnUploadGlobal') : $('#btnUploadOnly');
+    btn.disabled = true;
+    try {
+      const form = new FormData();
+      form.append('file', f);
+      toast(`上传中 ${(f.size / 1048576).toFixed(1)}MB …`);
+      const up = await api('/api/apps/upload', { method: 'POST', form });
+      toast(`已上传 ${up.filename}`, 'ok');
+      if (install) {
+        const devId = $('#apkTargetDevice').value;
+        if (!devId) { toast('没有可安装的设备，文件已保留在 apks/', 'err'); }
+        else {
+          await api(`/api/devices/${devId}/apps/install`, { method: 'POST', body: { source: 'local', filename: up.filename } });
+          toast('已提交安装任务', 'ok');
+        }
+      }
+      await loadAppsPage();
+    } catch (err) {
+      modal('上传失败', `<div class="alert" style="margin:0"><div class="alert-body">${esc(err.message)}</div></div>`);
+    } finally { btn.disabled = false; }
+  }
+  $('#btnUploadGlobal').addEventListener('click', () => uploadApk(true));
+  $('#btnUploadOnly').addEventListener('click', () => uploadApk(false));
+
+  // ── 套餐 / 订单 ─────────────────────────────────────────────────────
+  const yuan = (cents) => `¥${(cents / 100).toFixed(2)}`;
+
+  async function loadPlans() {
+    const [plans, summary, orders] = await Promise.all([
+      api('/api/billing/plans'), api('/api/billing/summary'), api('/api/billing/orders?limit=20'),
+    ]);
+    state.channels = plans.channels.filter((c) => c.ready);
+
+    const ents = summary.active_entitlements || [];
+    $('#quotaInfo').innerHTML = [
+      ['计费', summary.billing_enabled
+        ? `<span class="badge ok">已开启</span>${summary.enforce ? ' <span class="badge starting">强制</span>' : ' <span class="sub">未强制，可自由开设备</span>'}`
+        : '<span class="badge">未开启</span>'],
+      ['设备额度', `${summary.device_used} / ${summary.device_quota}（剩 ${summary.device_remaining}）`],
+      ['生效套餐', ents.length
+        ? ents.map((e) => `${esc(e.plan_name)} · 剩 ${e.days_left ?? '-'} 天 · 设备 ${e.used_devices}/${e.max_devices}`).join('<br>')
+        : '<span class="sub">还没有已购套餐</span>'],
+    ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+
+    $('#planGrid').innerHTML = plans.items.map((p) => `
+      <div class="plan" data-id="${p.id}">
+        ${p.badge ? `<div class="plan-badge">${esc(p.badge)}</div>` : ''}
+        <h3>${esc(p.name)}</h3>
+        <div class="plan-price">${yuan(p.price_cents)}
+          <span class="plan-cycle">/ ${p.duration_days} 天</span></div>
+        ${p.original_price_cents ? `<div class="plan-origin">${yuan(p.original_price_cents)}</div>` : ''}
+        <p class="plan-desc">${esc(p.description || '')}</p>
+        <ul class="plan-spec">
+          <li>分辨率 ${p.spec.width}×${p.spec.height} @${p.spec.dpi}dpi</li>
+          <li>${p.spec.memory_mb ? p.spec.memory_mb + 'MB 内存' : '内存不限'} · ${p.spec.cpu_limit ? p.spec.cpu_limit + ' 核' : 'CPU 不限'}</li>
+          <li>${p.spec.max_devices} 台设备 · ${p.spec.max_tasks} 个监控任务</li>
+          <li>${p.spec.allow_proxy ? '独立出口 IP' : '不含代理'} · ${p.spec.allow_recording ? '录屏' : '无录屏'} · ${p.spec.allow_audio ? '声音' : '无声音'}</li>
+        </ul>
+        <div class="form-row tight">
+          <select class="pay-channel">${state.channels
+            .map((c) => `<option value="${c.channel}">${esc(c.label)}</option>`).join('') || '<option value="">无可用通道</option>'}</select>
+          <button class="btn primary" data-act="buy">立即购买</button>
+        </div>
+      </div>`).join('') || '<div class="card">还没有配置套餐，去「后台」新增</div>';
+
+    $('#orderTable tbody').innerHTML = orders.items.map((o) => `
+      <tr data-no="${esc(o.order_no)}">
+        <td class="wrap"><span class="img-sub">${esc(o.order_no)}</span></td>
+        <td>${esc(o.plan_name || '-')}</td>
+        <td>${yuan(o.amount_cents)}</td>
+        <td>${esc(o.channel)}</td>
+        <td><span class="badge ${o.status === 'paid' ? 'ok' : (o.status === 'pending' ? 'starting' : 'error')}">${esc(o.status)}</span></td>
+        <td>${fmtTime(o.created_at)}</td>
+        <td>${o.status === 'pending' ? '<button class="btn small primary" data-act="pay">继续支付</button>' : ''}
+            ${o.status === 'pending' ? '<button class="btn small danger" data-act="cancel">取消</button>' : ''}</td>
+      </tr>`).join('') || '<tr><td colspan="7">还没有订单</td></tr>';
+  }
+
+  let payPoll = null;
+  function showPayModal(order) {
+    clearInterval(payPoll);
+    const isMock = order.channel === 'mock';
+    modal('扫码支付', `
+      <div class="pay-box">
+        <img class="pay-qr" src="/api/billing/orders/${order.order_no}/qr.png?t=${Date.now()}" alt="支付二维码" />
+        <div class="pay-info">
+          <div class="pay-amount">${yuan(order.amount_cents)}</div>
+          <div>${esc(order.plan_name || '')}</div>
+          <div class="img-sub">订单 ${esc(order.order_no)}</div>
+          <div class="img-sub">通道 ${esc(order.channel)}</div>
+          <div id="payStatus" class="badge starting">等待支付…</div>
+          ${isMock ? `<p class="hint">本地联调通道：<a href="${esc(order.pay_url)}" target="_blank" rel="noopener">点这里模拟付款</a></p>` : '<p class="hint">用手机扫码完成付款，页面会自动刷新状态</p>'}
+        </div>
+      </div>`);
+    payPoll = setInterval(async () => {
+      try {
+        const o = await api(`/api/billing/orders/${order.order_no}`);
+        const st = $('#payStatus');
+        if (!st) { clearInterval(payPoll); return; }
+        if (o.status === 'paid') {
+          clearInterval(payPoll);
+          st.className = 'badge ok';
+          st.textContent = '支付成功，权益已发放';
+          toast('支付成功', 'ok');
+          loadPlans().catch(() => {});
+        } else if (o.status !== 'pending') {
+          clearInterval(payPoll);
+          st.className = 'badge error';
+          st.textContent = `订单${o.status === 'closed' ? '已关闭' : o.status}`;
+        }
+      } catch (_) { /* 轮询抖动忽略 */ }
+    }, 2000);
+  }
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'modalClose' || e.target.id === 'modal') clearInterval(payPoll);
+  });
+
+  $('#planGrid').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act="buy"]');
+    if (!btn) return;
+    const card = btn.closest('.plan');
+    const channel = card.querySelector('.pay-channel')?.value;
+    if (!channel) { toast('没有可用的支付通道，先在 .env 里配置', 'err'); return; }
+    btn.disabled = true;
+    try {
+      const order = await api('/api/billing/orders', { method: 'POST', body: { plan_id: Number(card.dataset.id), channel } });
+      showPayModal(order);
+      await loadPlans();
+    } catch (err) { toast(err.message, 'err'); } finally { btn.disabled = false; }
+  });
+
+  $('#orderTable').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act]');
+    if (!btn) return;
+    const no = btn.closest('tr').dataset.no;
+    try {
+      if (btn.dataset.act === 'pay') {
+        showPayModal(await api(`/api/billing/orders/${no}`));
+      } else {
+        await api(`/api/billing/orders/${no}/cancel`, { method: 'POST' });
+        toast('已取消', 'ok');
+        await loadPlans();
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  // ── 后台 ────────────────────────────────────────────────────────────
+  const adminToken = () => localStorage.getItem('ldm_admin_token') || '';
+  function adminHeaders() {
+    const t = adminToken();
+    return t ? { 'X-Admin-Token': t } : {};
+  }
+  async function adminApi(path, { method = 'GET', body } = {}) {
+    const opts = { method, headers: { ...adminHeaders() } };
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (_) {}
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+    }
+    return res.json();
+  }
+
+  $('#btnSaveToken').addEventListener('click', () => {
+    localStorage.setItem('ldm_admin_token', $('#adminToken').value.trim());
+    toast('已记住 token（存在本地浏览器）', 'ok');
+    loadAdmin().catch((e) => toast(e.message, 'err'));
+  });
+
+  async function loadAdmin() {
+    $('#adminToken').value = adminToken();
+    let cfg = null;
+    try { cfg = await adminApi('/api/billing/config'); } catch (err) {
+      $('#billingConfig').innerHTML = `<div class="k">读取失败</div><div class="v" style="color:var(--err)">${esc(err.message)}</div>`;
+    }
+    if (cfg) {
+      $('#billingConfig').innerHTML = [
+        ['计费开关', cfg.billing_enabled ? '<span class="badge ok">开启</span>' : '<span class="badge">关闭</span>'],
+        ['强制付费', cfg.enforce ? '<span class="badge starting">开启（无权益不能开设备）</span>' : '<span class="badge">关闭</span>'],
+        ['站点地址', `<code class="cmd">${esc(cfg.site_base_url)}</code>`],
+        ['支付通道', (cfg.channels || []).map((c) => `<span class="badge ${c.ready ? 'ok' : 'error'}">${esc(c.label)}${c.ready ? '' : ' 未配置'}</span>`).join(' ')],
+        ['支付宝', cfg.alipay_configured ? '<span class="badge ok">已配置</span>' : '<span class="badge">未配置</span>'],
+        ['微信支付', cfg.wechat_configured ? '<span class="badge ok">已配置</span>' : '<span class="badge">未配置</span>'],
+        ['回调地址', `支付宝 <code class="cmd">${esc(cfg.notify_urls.alipay)}</code><br>微信 <code class="cmd">${esc(cfg.notify_urls.wechat)}</code>`],
+        ['订单有效期', `${cfg.order_ttl_minutes} 分钟`],
+        ['Admin Token', cfg.admin_token_set ? '<span class="badge ok">已设置</span>' : '<span class="badge">未设置（接口无保护）</span>'],
+      ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+    }
+
+    const plans = await api('/api/billing/plans?include_disabled=true');
+    const num = (v, field, id) => `<input class="cell" type="number" step="${field === 'cpu_limit' ? '0.5' : '1'}" value="${v ?? ''}" data-id="${id}" data-field="${field}" />`;
+    $('#planAdminTable tbody').innerHTML = plans.items.map((p) => `
+      <tr data-id="${p.id}">
+        <td>${p.id}</td>
+        <td><span class="img-sub">${esc(p.code)}</span></td>
+        <td>${esc(p.name)}</td>
+        <td>${num(p.spec.width, 'width', p.id)}×${num(p.spec.height, 'height', p.id)}<br>
+            dpi ${num(p.spec.dpi, 'dpi', p.id)}</td>
+        <td>内存 ${num(p.spec.memory_mb, 'memory_mb', p.id)}<br>
+            CPU ${num(p.spec.cpu_limit, 'cpu_limit', p.id)}<br>
+            设备 ${num(p.spec.max_devices, 'max_devices', p.id)} 任务 ${num(p.spec.max_tasks, 'max_tasks', p.id)}</td>
+        <td>${num(p.duration_days, 'duration_days', p.id)} 天</td>
+        <td>${num(p.price_cents, 'price_cents', p.id)} 分<br><span class="img-sub">${yuan(p.price_cents)}</span></td>
+        <td><input type="checkbox" data-id="${p.id}" data-field="enabled" ${p.enabled ? 'checked' : ''} /></td>
+        <td><button class="btn small danger" data-act="delete">删除</button></td>
+      </tr>`).join('') || '<tr><td colspan="9">还没有套餐</td></tr>';
+  }
+
+  $('#planAdminTable').addEventListener('change', async (e) => {
+    const el = e.target.closest('[data-field]');
+    if (!el) return;
+    const field = el.dataset.field;
+    const value = el.type === 'checkbox' ? el.checked : Number(el.value);
+    try {
+      await adminApi(`/api/billing/plans/${el.dataset.id}`, { method: 'PATCH', body: { [field]: value } });
+      toast(`已保存 ${field}`, 'ok');
+      await loadAdmin();
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  $('#planAdminTable').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-act="delete"]');
+    if (!btn) return;
+    if (!confirm('删除该套餐？有历史订单时会自动改为下架。')) return;
+    try {
+      const r = await adminApi(`/api/billing/plans/${btn.closest('tr').dataset.id}`, { method: 'DELETE' });
+      toast(r.message || '已删除', 'ok');
+      await loadAdmin();
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  $('#planForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const body = {
+      code: f.get('code'), name: f.get('name'),
+      width: Number(f.get('width')), height: Number(f.get('height')), dpi: Number(f.get('dpi')),
+      memory_mb: Number(f.get('memory_mb') || 0), cpu_limit: Number(f.get('cpu_limit') || 0),
+      max_devices: Number(f.get('max_devices') || 1), max_tasks: Number(f.get('max_tasks') || 5),
+      duration_days: Number(f.get('duration_days') || 30),
+      price_cents: Math.round(Number(f.get('price_yuan') || 0) * 100),
+      original_price_cents: f.get('original_price_yuan') ? Math.round(Number(f.get('original_price_yuan')) * 100) : null,
+      allow_proxy: f.get('allow_proxy') === 'on',
+      allow_recording: f.get('allow_recording') === 'on',
+      allow_audio: f.get('allow_audio') === 'on',
+    };
+    try {
+      await adminApi('/api/billing/plans', { method: 'POST', body });
+      e.target.reset();
+      toast('套餐已创建', 'ok');
+      await loadAdmin();
     } catch (err) { toast(err.message, 'err'); }
   });
 
@@ -687,10 +1044,13 @@
   const loaders = {
     overview: loadOverview,
     devices: loadDevices,
+    apps: loadAppsPage,
     proxies: loadProxies,
     tasks: loadTasks,
     data: loadData,
     recordings: loadRecordings,
+    plans: loadPlans,
+    admin: loadAdmin,
     events: loadEvents,
   };
 

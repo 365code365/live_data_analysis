@@ -47,6 +47,13 @@ def start() -> None:
         replace_existing=True,
         next_run_time=datetime.now() + timedelta(seconds=20),
     )
+    sched.add_job(
+        _billing_housekeeping,
+        trigger=IntervalTrigger(seconds=120),
+        id="billing_housekeeping",
+        replace_existing=True,
+        next_run_time=datetime.now() + timedelta(seconds=45),
+    )
     sched.start()
     reload_jobs()
     log.info("调度器已启动")
@@ -123,6 +130,32 @@ def jobs() -> list[dict[str, Any]]:
             }
         )
     return out
+
+
+def _billing_housekeeping() -> None:
+    """关闭超时订单、失效过期权益，并推进仍在等待支付的订单。"""
+    from . import billing
+
+    if not settings.billing_enabled:
+        return
+    try:
+        with session_scope() as session:
+            stats = billing.expire_stale(session)
+            if stats["orders_closed"] or stats["entitlements_expired"]:
+                log.info("计费清理: %s", stats)
+            # 回调可能丢失（本地无公网/回调被拦），这里主动补一次查询
+            from ..models import Order, OrderStatus
+
+            pending = session.exec(
+                select(Order).where(Order.status == OrderStatus.pending)
+            ).all()
+            for order in pending[:20]:
+                try:
+                    billing.sync_order(session, order)
+                except Exception as exc:
+                    log.debug("同步订单 %s 失败: %s", order.order_no, exc)
+    except Exception:
+        log.exception("billing housekeeping 执行异常")
 
 
 def _housekeeping() -> None:

@@ -114,8 +114,12 @@ class DockerManager:
         adb_port: int,
         novnc_port: int,
         proxy_url: Optional[str],
+        audio_port: Optional[int] = None,
         android_image: Optional[str] = None,
         vnc_password: Optional[str] = None,
+        enable_audio: bool = True,
+        memory_mb: int = 0,
+        cpu_limit: float = 0,
     ) -> dict[str, str]:
         self.ensure_network()
         n = self.names(device_id)
@@ -127,10 +131,12 @@ class DockerManager:
 
         self._ensure_volume(n.volume, device_id)
 
-        gw = self._start_gateway(device_id, n, adb_port, novnc_port, proxy_url)
+        gw = self._start_gateway(device_id, n, adb_port, novnc_port, audio_port, proxy_url)
         try:
-            android = self._start_android(device_id, n, gw.id, image, width, height, dpi)
-            vnc = self._start_vnc(device_id, n, gw.id, width, height, vnc_password)
+            android = self._start_android(
+                device_id, n, gw.id, image, width, height, dpi, memory_mb, cpu_limit
+            )
+            vnc = self._start_vnc(device_id, n, gw.id, width, height, vnc_password, enable_audio)
         except Exception:
             # 起一半失败就整组回收，避免留下半死状态
             for name in (n.vnc, n.android, n.gw):
@@ -151,13 +157,26 @@ class DockerManager:
             log.info("创建安卓数据卷 %s", name)
             self.client.volumes.create(name=name, labels=self._labels(device_id, "data"))
 
-    def _start_gateway(self, device_id: int, n: StackNames, adb_port: int, novnc_port: int, proxy_url: Optional[str]):
+    def _start_gateway(
+        self,
+        device_id: int,
+        n: StackNames,
+        adb_port: int,
+        novnc_port: int,
+        audio_port: Optional[int],
+        proxy_url: Optional[str],
+    ):
         env = {
             "PROXY_URL": proxy_url or "",
             "DNS_UPSTREAM": settings.gateway_dns_upstream,
             "DNS_FALLBACK": settings.gateway_dns_fallback,
             "KILL_SWITCH": "true" if (settings.gateway_kill_switch and proxy_url) else "false",
         }
+        # 三个对外端口都发布在网关容器上（安卓/画面容器共享它的 netns）
+        ports: dict[str, int] = {"5555/tcp": adb_port, "6080/tcp": novnc_port}
+        if audio_port:
+            ports["6081/tcp"] = audio_port
+
         log.info("启动网关 %s proxy=%s", n.gw, _mask(proxy_url))
         return self.client.containers.run(
             settings.gateway_image,
@@ -172,14 +191,25 @@ class DockerManager:
                 # 也避免组件优先走 ::1 时被防火墙规则拖住
                 "net.ipv6.conf.all.disable_ipv6": "1",
             },
-            ports={"5555/tcp": adb_port, "6080/tcp": novnc_port},
+            ports=ports,
             network=settings.docker_network,
             labels=self._labels(device_id, ROLE_GATEWAY),
             restart_policy={"Name": "unless-stopped"},
             hostname=f"gw{device_id}",
         )
 
-    def _start_android(self, device_id: int, n: StackNames, gw_id: str, image: str, width: int, height: int, dpi: int):
+    def _start_android(
+        self,
+        device_id: int,
+        n: StackNames,
+        gw_id: str,
+        image: str,
+        width: int,
+        height: int,
+        dpi: int,
+        memory_mb: int = 0,
+        cpu_limit: float = 0,
+    ):
         command = [
             f"androidboot.redroid_width={width}",
             f"androidboot.redroid_height={height}",
@@ -189,8 +219,13 @@ class DockerManager:
             "androidboot.use_memfd=true",
         ]
         kwargs: dict[str, Any] = {}
-        if settings.device_memory_mb > 0:
-            kwargs["mem_limit"] = f"{settings.device_memory_mb}m"
+        mem = memory_mb if memory_mb and memory_mb > 0 else settings.device_memory_mb
+        if mem and mem > 0:
+            kwargs["mem_limit"] = f"{int(mem)}m"
+        if cpu_limit and cpu_limit > 0:
+            # docker 用 cpu_quota/cpu_period 表达「几个核」
+            kwargs["cpu_period"] = 100000
+            kwargs["cpu_quota"] = int(float(cpu_limit) * 100000)
 
         log.info("启动安卓 %s image=%s %sx%s@%s", n.android, image, width, height, dpi)
         return self.client.containers.run(
@@ -208,12 +243,23 @@ class DockerManager:
             **kwargs,
         )
 
-    def _start_vnc(self, device_id: int, n: StackNames, gw_id: str, width: int, height: int, vnc_password: Optional[str]):
+    def _start_vnc(
+        self,
+        device_id: int,
+        n: StackNames,
+        gw_id: str,
+        width: int,
+        height: int,
+        vnc_password: Optional[str],
+        enable_audio: bool = True,
+    ):
         env = {
             "ADB_TARGET": "127.0.0.1:5555",
             "SCREEN_WIDTH": str(width),
             "SCREEN_HEIGHT": str(height),
             "VNC_PASSWORD": vnc_password or "",
+            "ENABLE_AUDIO": "true" if enable_audio else "false",
+            "AUDIO_PORT": "6081",
         }
         log.info("启动画面容器 %s", n.vnc)
         return self.client.containers.run(

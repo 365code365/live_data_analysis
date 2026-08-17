@@ -197,6 +197,117 @@ class AndroidDevice:
         self.shell("input keyevent KEYCODE_WAKEUP")
         self.shell("svc power stayon true")
 
+    # ── 剪贴板 / 文本输入 ─────────────────────────────────────────────
+    ADBKEYBOARD_PKG = "com.android.adbkeyboard"
+
+    def paste_text(self, text: str, *, submit: bool = False) -> dict[str, Any]:
+        """把外部文本送进设备。
+
+        安卓没有一个到处都好用的注入通道，这里按可靠性依次回退：
+          1. cmd clipboard set-text + KEYCODE_PASTE —— 原生，支持中文
+          2. ADBKeyboard 的广播 —— 需要装 com.android.adbkeyboard 并选为输入法
+          3. input text —— 只能 ASCII，中文会变成乱码或丢失
+        """
+        if not text:
+            return {"ok": False, "method": None, "error": "文本为空"}
+
+        # 1) 原生剪贴板
+        try:
+            out = self.shell(["cmd", "clipboard", "set-text", text], timeout=20)
+            low = (out or "").lower()
+            if "exception" not in low and "unknown command" not in low and "error" not in low:
+                self.key(279)  # KEYCODE_PASTE
+                if submit:
+                    self.key("KEYCODE_ENTER")
+                return {"ok": True, "method": "clipboard", "detail": out.strip()[:200]}
+        except Exception as exc:
+            log.debug("cmd clipboard 不可用: %s", exc)
+
+        # 2) ADBKeyboard
+        if self.is_installed(self.ADBKEYBOARD_PKG):
+            try:
+                self.shell(
+                    ["am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", text],
+                    timeout=20,
+                )
+                if submit:
+                    self.shell(["am", "broadcast", "-a", "ADB_EDITOR_CODE", "--ei", "code", "4"])
+                return {"ok": True, "method": "adbkeyboard"}
+            except Exception as exc:
+                log.debug("ADBKeyboard 广播失败: %s", exc)
+
+        # 3) input text（仅 ASCII）
+        if text.isascii():
+            self.shell(["input", "text", text.replace(" ", "%s")], timeout=30)
+            if submit:
+                self.key("KEYCODE_ENTER")
+            return {"ok": True, "method": "input-text"}
+
+        return {
+            "ok": False,
+            "method": None,
+            "error": (
+                "这台设备的原生剪贴板通道不可用，且 input text 无法输入非 ASCII 字符。"
+                "请在「应用」里安装 ADBKeyboard 并在设备上把它选为输入法，之后中文粘贴即可正常。"
+            ),
+        }
+
+    def get_clipboard(self) -> Optional[str]:
+        try:
+            out = self.shell(["cmd", "clipboard", "get-text"], timeout=15)
+            if out and "exception" not in out.lower():
+                return out.strip()
+        except Exception:
+            pass
+        return None
+
+    # ── 音量 ──────────────────────────────────────────────────────────
+    MUSIC_STREAM = 3
+
+    def volume_info(self) -> dict[str, Any]:
+        """读音乐流的当前音量。不同 ROM 输出格式不一，取不到就返回 None。"""
+        raw = ""
+        try:
+            raw = self.shell(
+                ["cmd", "media_session", "volume", "--stream", str(self.MUSIC_STREAM), "--get"],
+                timeout=15,
+            )
+        except Exception as exc:
+            log.debug("读音量失败: %s", exc)
+        cur = re.search(r"volume is (\d+) in range \[(\d+)\.\.(\d+)\]", raw or "")
+        if cur:
+            return {"volume": int(cur.group(1)), "min": int(cur.group(2)), "max": int(cur.group(3)), "raw": raw.strip()}
+        m = re.search(r"(\d+)", raw or "")
+        return {"volume": int(m.group(1)) if m else None, "min": 0, "max": 15, "raw": (raw or "").strip()[:200]}
+
+    def set_volume(self, value: int) -> dict[str, Any]:
+        value = max(0, min(25, int(value)))
+        self.shell(
+            ["cmd", "media_session", "volume", "--stream", str(self.MUSIC_STREAM), "--set", str(value)],
+            timeout=20,
+        )
+        return self.volume_info()
+
+    def volume_step(self, direction: str) -> dict[str, Any]:
+        key = {"up": "KEYCODE_VOLUME_UP", "down": "KEYCODE_VOLUME_DOWN", "mute": "KEYCODE_VOLUME_MUTE"}[direction]
+        self.key(key)
+        return self.volume_info()
+
+    # ── 旋转 ──────────────────────────────────────────────────────────
+    def rotate(self, orientation: Optional[int] = None) -> dict[str, Any]:
+        """orientation 为 0/1/2/3；不传则在竖屏与横屏之间切换。"""
+        self.shell(["settings", "put", "system", "accelerometer_rotation", "0"])
+        if orientation is None:
+            cur = self.shell(["settings", "get", "system", "user_rotation"]).strip()
+            try:
+                cur_i = int(cur)
+            except ValueError:
+                cur_i = 0
+            orientation = 1 if cur_i in (0, 2) else 0
+        orientation = int(orientation) % 4
+        self.shell(["settings", "put", "system", "user_rotation", str(orientation)])
+        return {"orientation": orientation}
+
     def screen_size(self) -> tuple[int, int]:
         raw = self.shell("wm size")
         m = re.search(r"(\d+)x(\d+)", raw or "")

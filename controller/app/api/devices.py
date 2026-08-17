@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFi
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core import collector, device_service, host
+from ..core import apps, collector, device_service, host
 from ..core.android import get_device
 from ..core.device_service import DeviceError
 from ..core.docker_manager import DockerError, get_docker
@@ -17,15 +17,18 @@ from ..core.recorder import recorder
 from ..db import get_session
 from ..models import Device, ProxyProfile
 from ..schemas import (
-    ApkInstall,
+    AppInstall,
     DeeplinkAction,
     DeviceCreate,
     DeviceUpdate,
     Ok,
+    PasteText,
     RecordStart,
+    RotateAction,
     ShellCommand,
     SwipeAction,
     TapAction,
+    VolumeAction,
 )
 
 log = logging.getLogger(__name__)
@@ -66,8 +69,13 @@ def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, 
         "proxy_id": device.proxy_id,
         "proxy_name": proxy.name if proxy else None,
         "proxy_url_masked": proxy.url(mask=True) if proxy else None,
+        "memory_mb": device.memory_mb,
+        "cpu_limit": device.cpu_limit,
+        "entitlement_id": device.entitlement_id,
         "adb_port": device.adb_port,
         "novnc_port": device.novnc_port,
+        "audio_port": device.audio_port,
+        "enable_audio": device.enable_audio,
         "adb_addr": device.adb_addr,
         "vnc_password": device.vnc_password,
         "egress_ip": device.egress_ip,
@@ -107,18 +115,6 @@ def create_device(payload: DeviceCreate, session: Session = Depends(get_session)
     return _out(session, device)
 
 
-@router.get("/apks")
-def list_apks() -> list[dict[str, Any]]:
-    """列出 apks/ 目录下可安装的包。"""
-    apk_dir = settings.apk_dir
-    if not apk_dir.exists():
-        return []
-    out = []
-    for p in sorted(apk_dir.glob("*.apk")):
-        out.append({"filename": p.name, "size_mb": round(p.stat().st_size / 1048576, 1)})
-    return out
-
-
 @router.get("/{device_id}")
 def get_device_detail(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
@@ -135,7 +131,10 @@ def update_device(device_id: int, payload: DeviceUpdate, session: Session = Depe
     session.commit()
     session.refresh(device)
     hint = ""
-    if {"proxy_id", "width", "height", "dpi", "android_image", "vnc_password"} & set(changes):
+    if {
+        "proxy_id", "width", "height", "dpi", "android_image",
+        "vnc_password", "enable_audio", "memory_mb", "cpu_limit",
+    } & set(changes):
         hint = "改动需要重启设备后生效"
     return {**_out(session, device), "hint": hint}
 
@@ -208,55 +207,81 @@ def device_logs(
 
 
 # ── 应用 ──────────────────────────────────────────────────────────────────
-@router.post("/{device_id}/apk/install")
-def install_apk(device_id: int, payload: ApkInstall, session: Session = Depends(get_session)) -> Ok:
+@router.get("/{device_id}/apps")
+def list_device_apps(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """设备上已安装的第三方应用 + 当前安装任务进度。"""
     device = _get(session, device_id)
-    # 只允许安装 apks/ 目录内的文件，避免路径穿越
-    apk_path = (settings.apk_dir / Path(payload.filename).name).resolve()
-    if not str(apk_path).startswith(str(settings.apk_dir.resolve())) or not apk_path.exists():
-        raise HTTPException(404, f"apks/ 下找不到 {payload.filename}")
     try:
-        out = device_service.install_apk(device, str(apk_path))
+        installed = apps.installed_apps(device.adb_addr)
+    except Exception as exc:
+        raise HTTPException(409, _offline_reason(device) if not get_device(device.adb_addr).is_online() else str(exc)) from exc
+    return {"items": installed, "job": apps.app_jobs.get(device_id)}
+
+
+@router.post("/{device_id}/apps/install")
+def install_app(device_id: int, payload: AppInstall, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """三种来源：应用目录(catalog) / 已上传的本地包(local) / 任意直链(url)。"""
+    device = _get(session, device_id)
+    source = payload.source
+    url = payload.url
+    filename = payload.filename
+    name = payload.filename or payload.url or ""
+
+    if source == "catalog":
+        entry = apps.catalog_entry(payload.key or "")
+        if entry is None:
+            raise HTTPException(404, f"应用目录里没有 {payload.key}")
+        if not entry["url"]:
+            raise HTTPException(
+                400,
+                f"「{entry['name']}」没有配置直链。{entry['note'] or ''} "
+                f"官方下载页: {entry['page'] or '无'}",
+            )
+        source, url, name = "url", entry["url"], entry["name"]
+    elif source == "url":
+        if not url:
+            raise HTTPException(400, "缺少 url")
+    elif source == "local":
+        if not filename:
+            raise HTTPException(400, "缺少 filename")
+    else:
+        raise HTTPException(400, f"未知来源: {source}")
+
+    try:
+        return apps.app_jobs.start(
+            device_id=device_id,
+            addr=device.adb_addr,
+            source=source,
+            name=name or "apk",
+            url=url,
+            filename=filename,
+            keep_file=payload.keep_file,
+        )
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
-    return Ok(message=out.strip()[:300] or "安装完成")
 
 
-@router.post("/{device_id}/apk/upload")
-async def upload_and_install(
-    device_id: int,
-    file: UploadFile,
-    install: bool = Query(True),
-    session: Session = Depends(get_session),
-) -> Ok:
+@router.get("/{device_id}/apps/job")
+def app_job(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    _get(session, device_id)
+    return {"job": apps.app_jobs.get(device_id)}
+
+
+@router.delete("/{device_id}/apps/{package}")
+def uninstall_app(device_id: int, package: str, session: Session = Depends(get_session)) -> Ok:
     device = _get(session, device_id)
-    filename = Path(file.filename or "upload.apk").name
-    if not filename.endswith(".apk"):
-        raise HTTPException(400, "只接受 .apk 文件")
-    settings.apk_dir.mkdir(parents=True, exist_ok=True)
-    dest = settings.apk_dir / filename
     try:
-        dest.write_bytes(await file.read())
-    except OSError as exc:
-        raise HTTPException(500, f"保存失败（apks/ 目录是否只读？）: {exc}") from exc
-    if not install:
-        return Ok(message=f"已上传 {filename}")
-    try:
-        out = device_service.install_apk(device, str(dest))
+        out = apps.uninstall_app(device.adb_addr, package)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
-    return Ok(message=out.strip()[:300] or "安装完成")
+    return Ok(message=out.strip()[:200] or "已卸载")
 
 
-@router.get("/{device_id}/packages")
-def list_packages(
-    device_id: int,
-    keyword: str = "",
-    session: Session = Depends(get_session),
-) -> dict[str, Any]:
+@router.post("/{device_id}/launch/{package}")
+def launch_app(device_id: int, package: str, session: Session = Depends(get_session)) -> Ok:
     device = _get(session, device_id)
-    dev = get_device(device.adb_addr)
-    return {"packages": dev.list_packages(keyword)}
+    get_device(device.adb_addr).start_app(package)
+    return Ok(message=f"已启动 {package}")
 
 
 # ── 交互 ──────────────────────────────────────────────────────────────────
@@ -321,6 +346,50 @@ def _offline_reason(device: Device) -> str:
         "安卓容器在跑，但 adb 还连不上。首次开机需要 1-3 分钟，"
         "稍等后重试；一直如此就看安卓容器日志。"
     )
+
+
+@router.post("/{device_id}/paste")
+def paste_text(device_id: int, payload: PasteText, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """把浏览器里的文本送进安卓（支持中文，多级回退）。"""
+    device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
+    result = dev.paste_text(payload.text, submit=payload.submit)
+    if not result.get("ok"):
+        raise HTTPException(422, result.get("error") or "文本注入失败")
+    return result
+
+
+@router.get("/{device_id}/volume")
+def get_volume(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
+    return dev.volume_info()
+
+
+@router.post("/{device_id}/volume")
+def set_volume(device_id: int, payload: VolumeAction, session: Session = Depends(get_session)) -> dict[str, Any]:
+    device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
+    if payload.action == "set":
+        if payload.value is None:
+            raise HTTPException(400, "action=set 时必须给 value")
+        return dev.set_volume(payload.value)
+    return dev.volume_step(payload.action)
+
+
+@router.post("/{device_id}/rotate")
+def rotate(device_id: int, payload: RotateAction, session: Session = Depends(get_session)) -> dict[str, Any]:
+    device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
+    return dev.rotate(payload.orientation)
 
 
 @router.get("/{device_id}/screenshot")

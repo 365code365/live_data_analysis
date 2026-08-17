@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import secrets
 import time
@@ -9,7 +10,7 @@ from sqlmodel import Session, select
 
 from ..config import settings
 from ..models import Device, DeviceStatus, ProxyProfile, utcnow
-from . import events
+from . import billing, events
 from . import host
 from .android import drop_device, get_device
 from .docker_manager import DockerError, get_docker
@@ -23,10 +24,10 @@ class DeviceError(RuntimeError):
 
 
 # ── 端口分配 ──────────────────────────────────────────────────────────────
-def allocate_ports(session: Session, *, count: int = 2) -> list[int]:
+def allocate_ports(session: Session, *, count: int = 3) -> list[int]:
     used: set[int] = set()
     for dev in session.exec(select(Device)).all():
-        for p in (dev.adb_port, dev.novnc_port):
+        for p in (dev.adb_port, dev.novnc_port, dev.audio_port):
             if p:
                 used.add(p)
     try:
@@ -68,9 +69,32 @@ def create_device(
     proxy_id: Optional[int] = None,
     android_image: Optional[str] = None,
     vnc_password: Optional[str] = None,
+    enable_audio: bool = True,
+    plan_id: Optional[int] = None,
     autostart: bool = True,
 ) -> Device:
-    adb_port, novnc_port = allocate_ports(session, count=2)
+    # ── 计费：按套餐规格开机并占用权益名额 ────────────────────────────
+    entitlement_id: Optional[int] = None
+    memory_mb, cpu_limit = 0, 0.0
+    if settings.billing_enabled and (plan_id or settings.billing_enforce):
+        try:
+            ent = billing.pick_entitlement(session, plan_id)
+        except billing.BillingError as exc:
+            raise DeviceError(str(exc)) from exc
+        entitlement_id = ent.id
+        spec = json.loads(ent.spec_snapshot) if ent.spec_snapshot else {}
+        # 规格以套餐为准，避免用低价套餐开高配实例
+        width = int(spec.get("width") or width or settings.device_width)
+        height = int(spec.get("height") or height or settings.device_height)
+        dpi = int(spec.get("dpi") or dpi or settings.device_dpi)
+        memory_mb = int(spec.get("memory_mb") or 0)
+        cpu_limit = float(spec.get("cpu_limit") or 0)
+        if not spec.get("allow_audio", True):
+            enable_audio = False
+        if proxy_id and not spec.get("allow_proxy", True):
+            raise DeviceError(f"套餐「{ent.plan_name}」不含独立出口 IP，请升级套餐或不要绑定代理")
+
+    adb_port, novnc_port, audio_port = allocate_ports(session, count=3)
     device = Device(
         name=name,
         width=width or settings.device_width,
@@ -80,6 +104,11 @@ def create_device(
         android_image=android_image or settings.redroid_image,
         adb_port=adb_port,
         novnc_port=novnc_port,
+        audio_port=audio_port,
+        enable_audio=enable_audio,
+        entitlement_id=entitlement_id,
+        memory_mb=memory_mb,
+        cpu_limit=cpu_limit,
         vnc_password=vnc_password if vnc_password is not None else secrets.token_urlsafe(9),
         status=DeviceStatus.created,
     )
@@ -128,6 +157,12 @@ def start_device(session: Session, device: Device) -> Device:
         session.commit()
         raise DeviceError(host.BINDER_HELP)
 
+    # 老设备记录没有音频端口，补一个（升级前建的设备也能听声音）
+    if not device.audio_port:
+        device.audio_port = allocate_ports(session, count=1)[0]
+        session.add(device)
+        session.commit()
+
     proxy_url = _proxy_url(session, device.proxy_id)
 
     device.status = DeviceStatus.starting
@@ -144,9 +179,13 @@ def start_device(session: Session, device: Device) -> Device:
             dpi=device.dpi,
             adb_port=int(device.adb_port),
             novnc_port=int(device.novnc_port),
+            audio_port=device.audio_port,
             proxy_url=proxy_url,
             android_image=device.android_image,
             vnc_password=device.vnc_password,
+            enable_audio=device.enable_audio,
+            memory_mb=device.memory_mb,
+            cpu_limit=device.cpu_limit,
         )
     except Exception as exc:
         device.status = DeviceStatus.error

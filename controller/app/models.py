@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 
 from sqlmodel import Field, SQLModel
@@ -86,13 +86,20 @@ class Device(SQLModel, table=True):
     width: int = 720
     height: int = 1280
     dpi: int = 320
+    # 0 表示不限制；由套餐规格决定，这是「不同配置不同价格」的落地点
+    memory_mb: int = 0
+    cpu_limit: float = 0
     android_image: Optional[str] = None
 
     proxy_id: Optional[int] = Field(default=None, foreign_key="proxy_profile.id", index=True)
+    # 由哪份权益开出来的（计费开启时用于配额核算与到期回收）
+    entitlement_id: Optional[int] = Field(default=None, index=True)
 
     adb_port: Optional[int] = None       # 宿主机映射端口（外部调试用）
     novnc_port: Optional[int] = None     # 宿主机映射端口（浏览器看屏）
+    audio_port: Optional[int] = None     # 宿主机映射端口（浏览器听声）
     vnc_password: Optional[str] = None
+    enable_audio: bool = Field(default=True)
 
     gw_container: Optional[str] = None
     android_container: Optional[str] = None
@@ -208,6 +215,126 @@ class Recording(SQLModel, table=True):
     size_bytes: Optional[int] = None
     segment_count: int = 0
     error: Optional[str] = None
+
+
+class OrderStatus(str, Enum):
+    pending = "pending"      # 待支付
+    paid = "paid"            # 已支付
+    closed = "closed"        # 已取消/超时关闭
+    refunded = "refunded"
+    failed = "failed"
+
+
+class PayChannel(str, Enum):
+    alipay = "alipay"
+    wechat = "wechat"
+    mock = "mock"            # 本地联调用：不接真实网关
+
+
+class EntitlementStatus(str, Enum):
+    active = "active"
+    expired = "expired"
+
+
+class Plan(SQLModel, table=True):
+    """售卖的套餐。规格不同价格不同，全部在后台可改。"""
+
+    __tablename__ = "plan"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    code: str = Field(index=True, description="套餐标识，创建订单时用")
+    name: str
+    description: Optional[str] = None
+    badge: Optional[str] = Field(default=None, description="卡片角标，如「推荐」")
+
+    # ── 规格（决定价格的那些配置）──────────────────────────────────
+    width: int = 720
+    height: int = 1280
+    dpi: int = 320
+    cpu_limit: float = Field(default=0, description="0 表示不限制")
+    memory_mb: int = Field(default=0, description="0 表示不限制")
+    max_devices: int = 1
+    max_tasks: int = 5
+    allow_proxy: bool = True
+    allow_recording: bool = True
+    allow_audio: bool = True
+
+    # ── 价格 ────────────────────────────────────────────────────────
+    duration_days: int = 30
+    price_cents: int = Field(default=0, description="单位：分")
+    original_price_cents: Optional[int] = None
+    currency: str = "CNY"
+
+    sort_order: int = 0
+    enabled: bool = Field(default=True, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+    def spec(self) -> dict[str, Any]:
+        return {
+            "width": self.width,
+            "height": self.height,
+            "dpi": self.dpi,
+            "cpu_limit": self.cpu_limit,
+            "memory_mb": self.memory_mb,
+            "max_devices": self.max_devices,
+            "max_tasks": self.max_tasks,
+            "allow_proxy": self.allow_proxy,
+            "allow_recording": self.allow_recording,
+            "allow_audio": self.allow_audio,
+            "duration_days": self.duration_days,
+        }
+
+
+class Order(SQLModel, table=True):
+    """一笔订单。二维码支付：创建即生成 qr_code，付款后由回调或轮询置为 paid。"""
+
+    __tablename__ = "order"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    order_no: str = Field(index=True, description="商户订单号")
+    plan_id: Optional[int] = Field(default=None, foreign_key="plan.id", index=True)
+    plan_code: Optional[str] = None
+    plan_name: Optional[str] = None
+    plan_snapshot: Optional[str] = Field(default=None, description="下单时的套餐规格快照(JSON)")
+
+    amount_cents: int = 0
+    currency: str = "CNY"
+    channel: PayChannel = Field(default=PayChannel.mock, index=True)
+    status: OrderStatus = Field(default=OrderStatus.pending, index=True)
+
+    qr_code: Optional[str] = Field(default=None, description="二维码内容（付款码链接）")
+    pay_url: Optional[str] = None
+    trade_no: Optional[str] = Field(default=None, description="支付渠道流水号")
+    buyer: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    expires_at: Optional[datetime] = None
+    paid_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    notify_raw: Optional[str] = None
+    error: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class Entitlement(SQLModel, table=True):
+    """支付成功后发放的权益：在有效期内可以按套餐规格开设备。"""
+
+    __tablename__ = "entitlement"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    order_id: Optional[int] = Field(default=None, foreign_key="order.id", index=True)
+    order_no: Optional[str] = Field(default=None, index=True)
+    plan_id: Optional[int] = Field(default=None, foreign_key="plan.id", index=True)
+    plan_code: Optional[str] = None
+    plan_name: Optional[str] = None
+    spec_snapshot: Optional[str] = None
+
+    max_devices: int = 1
+    max_tasks: int = 5
+    started_at: datetime = Field(default_factory=utcnow, index=True)
+    expires_at: Optional[datetime] = Field(default=None, index=True)
+    status: EntitlementStatus = Field(default=EntitlementStatus.active, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class EventLog(SQLModel, table=True):

@@ -44,10 +44,35 @@ class Settings(BaseSettings):
     ui_action_timeout: float = 12.0
     max_product_scrolls: int = 8
 
+    # ── 应用目录 ──────────────────────────────────────────────────────
+    apps_catalog_file: str = ""
+
     # ── 录屏 ──────────────────────────────────────────────────────────
     record_segment_seconds: int = 170
     record_bitrate: int = 4_000_000
     record_keep_segments: bool = False
+
+    # ── 商业化 / 支付 ─────────────────────────────────────────────────
+    billing_enabled: bool = True
+    # 开启后创建设备必须有已购权益；默认关，方便自用与试跑
+    billing_enforce: bool = False
+    # 生成支付回调地址用；部署到公网时必须改成真实域名
+    site_base_url: str = "http://localhost:8000"
+    payment_channels: str = "mock"          # 逗号分隔: alipay,wechat,mock
+    order_ttl_minutes: int = 30
+    admin_token: str = ""                    # 非空时，后台定价类接口需要 X-Admin-Token
+
+    alipay_app_id: str = ""
+    alipay_private_key: str = ""             # PEM 内容或文件路径
+    alipay_public_key: str = ""              # 支付宝公钥，回调验签用
+    alipay_gateway: str = "https://openapi.alipay.com/gateway.do"
+
+    wechat_mch_id: str = ""
+    wechat_app_id: str = ""
+    wechat_api_v3_key: str = ""
+    wechat_cert_serial_no: str = ""
+    wechat_private_key: str = ""             # 商户 API 证书私钥
+    wechat_platform_public_key: str = ""     # 微信支付平台公钥，回调验签用
 
     # ── 网关 ──────────────────────────────────────────────────────────
     # 主上游走加密 DNS；部分网络会封 DoH/DoT，用 fallback 的 TCP 明文兜底

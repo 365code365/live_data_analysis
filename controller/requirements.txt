@@ -12,3 +12,7 @@ Pillow==11.1.0
 PyYAML==6.0.2
 python-multipart==0.0.20
 lxml==5.3.0
+# 支付签名/回调解密（支付宝 RSA2、微信 v3 AES-GCM）
+cryptography==44.0.0
+# 服务端渲染付款二维码，前端不引任何外部库
+qrcode==8.0
