@@ -108,6 +108,15 @@ class VolumeAction(BaseModel):
     value: Optional[int] = Field(default=None, ge=0, le=25)
 
 
+class ScreenReport(BaseModel):
+    """浏览器回报的投屏连接状态，用于排查「画面不稳定」。"""
+
+    state: str = Field(max_length=40)
+    detail: str = Field(default="", max_length=300)
+    instance: str = Field(default="", max_length=40)
+    reloads: int = Field(default=0, ge=0, le=100000)
+
+
 class RotateAction(BaseModel):
     orientation: Optional[int] = Field(default=None, ge=0, le=3, description="0/1/2/3；留空则竖横切换")
 

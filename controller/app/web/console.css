@@ -1,19 +1,25 @@
-/* 设备控制台：左屏幕右操作，屏幕区域按设备比例自适应 */
-.console-body { overflow: hidden; }
+/* 设备控制台：左屏幕右操作。
+   窗口再窄也不能把内容挤出屏幕，所以横向一律不溢出，必要时纵向滚动。 */
+.console-body { overflow-x: hidden; }
 
 .console-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) 400px;
-  gap: 16px;
-  padding: 16px 20px 20px;
-  height: calc(100vh - 58px);
+  /* 侧栏跟着窗口宽度收缩，不再是死的 400px */
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 30vw, 380px);
+  gap: 14px;
+  padding: 14px 16px 18px;
+  height: calc(100vh - var(--topbar-h) - 4px);
   max-width: 1600px;
   margin: 0 auto;
   box-sizing: border-box;
 }
-@media (max-width: 1000px) {
-  .console-layout { grid-template-columns: 1fr; height: auto; }
-  .side-pane { max-height: none; }
+/* grid 子项默认 min-width:auto，内容撑宽后就会溢出，必须显式归零 */
+.screen-pane, .side-pane { min-width: 0; }
+
+@media (max-width: 900px) {
+  .console-layout { grid-template-columns: minmax(0, 1fr); height: auto; }
+  .side-pane { max-height: none; overflow: visible; }
+  .screen-wrap { min-height: 50vh; }
 }
 
 /* ── 屏幕 ─────────────────────────────────────────────── */
@@ -70,4 +76,18 @@ input[type="range"] { flex: 1; min-width: 90px; accent-color: var(--accent); }
 #appTable { margin-top: 8px; }
 #appTable td { word-break: break-all; }
 
-.topbar .actions input[type="range"] { width: 90px; }
+/* ── 顶栏：窄窗口要能换行，不能把内容顶出屏幕 ────────────── */
+.console-body .topbar { height: auto; min-height: var(--topbar-h); padding: 8px 16px; row-gap: 8px; }
+.console-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.console-brand .page-title {
+  max-width: 32vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.console-actions {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; row-gap: 8px; margin-left: auto;
+}
+.console-actions input[type="range"] { width: 84px; flex: none; }
+.console-actions select { max-width: 120px; }
+.console-actions .sub { white-space: nowrap; }
+
+.mask-btns { display: flex; gap: 8px; justify-content: center; }

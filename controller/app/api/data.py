@@ -12,6 +12,7 @@ from sqlmodel import Session, func, select
 from ..config import settings
 from ..db import get_session
 from ..models import Device, EventLog, LiveSnapshot, MonitorTask, ProductRecord, Recording
+from .deps import require_admin
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["data"])
@@ -169,7 +170,7 @@ def product_keys(task_id: int, session: Session = Depends(get_session)) -> dict[
 
 
 # ── 事件 / 概览 ───────────────────────────────────────────────────────────
-@router.get("/events")
+@router.get("/events", dependencies=[Depends(require_admin)])
 def list_events(
     limit: int = Query(100, ge=1, le=500),
     level: Optional[str] = None,

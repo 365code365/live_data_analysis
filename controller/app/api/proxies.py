@@ -11,9 +11,12 @@ from ..core.docker_manager import DockerError, get_docker
 from ..db import get_session
 from ..models import Device, ProxyProfile, utcnow
 from ..schemas import Ok, ProxyCreate, ProxyProbe, ProxyUpdate
+from .deps import require_admin
 
 log = logging.getLogger(__name__)
-router = APIRouter(prefix="/proxies", tags=["proxies"])
+
+# 代理配置里带账号密码，属于后台内容，前台一律不可见
+router = APIRouter(prefix="/proxies", tags=["proxies"], dependencies=[Depends(require_admin)])
 
 
 def _out(proxy: ProxyProfile) -> dict[str, Any]:

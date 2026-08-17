@@ -1,291 +1,263 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>直播间监控控制台</title>
-  <!-- __ASSET_V__ 由后端按文件 mtime 替换，避免浏览器缓存住旧的 css/js -->
+  <title>云机工作台 · 直播监控</title>
+  <link rel="stylesheet" href="/static/theme.css?v=__ASSET_V__" />
   <link rel="stylesheet" href="/static/style.css?v=__ASSET_V__" />
 </head>
 <body>
-  <header class="topbar">
+<div class="shell">
+  <!-- 侧边导航 -->
+  <aside class="sidebar">
     <div class="brand">
-      <span class="dot"></span>
-      <h1>直播间监控控制台</h1>
-      <span class="sub" id="version"></span>
+      <div class="brand-mark">云</div>
+      <div class="brand-text">
+        <div class="brand-name">云机工作台</div>
+        <div class="brand-sub">直播监控 · 多开矩阵</div>
+      </div>
     </div>
-    <nav class="tabs" role="tablist">
-      <button class="tab active" data-view="overview" role="tab" aria-selected="true">概览</button>
-      <button class="tab" data-view="devices" role="tab" aria-selected="false">设备</button>
-      <button class="tab" data-view="apps" role="tab" aria-selected="false">应用</button>
-      <button class="tab" data-view="proxies" role="tab" aria-selected="false">代理</button>
-      <button class="tab" data-view="tasks" role="tab" aria-selected="false">任务</button>
-      <button class="tab" data-view="data" role="tab" aria-selected="false">数据</button>
-      <button class="tab" data-view="recordings" role="tab" aria-selected="false">录像</button>
-      <button class="tab" data-view="plans" role="tab" aria-selected="false">套餐</button>
-      <button class="tab" data-view="admin" role="tab" aria-selected="false">后台</button>
-      <button class="tab" data-view="events" role="tab" aria-selected="false">事件</button>
+
+    <nav class="nav">
+      <div class="nav-group">工作台</div>
+      <button class="nav-item" data-view="home" data-title="工作台" data-sub="我的云手机与运行概况">
+        <span class="nav-ico">◎</span>总览
+      </button>
+      <button class="nav-item" data-view="devices" data-title="我的云手机" data-sub="创建、开关机、进入控制台">
+        <span class="nav-ico">▤</span>云手机<span class="nav-badge" id="navDevices">0</span>
+      </button>
+      <button class="nav-item" data-view="store" data-title="应用市场" data-sub="一键装到云手机并直接打开">
+        <span class="nav-ico">⊞</span>应用市场
+      </button>
+
+      <div class="nav-group">监控</div>
+      <button class="nav-item" data-view="tasks" data-title="监控任务" data-sub="定时采集直播间与商品">
+        <span class="nav-ico">◷</span>监控任务<span class="nav-badge" id="navTasks">0</span>
+      </button>
+      <button class="nav-item" data-view="data" data-title="采集数据" data-sub="直播间快照与商品变动">
+        <span class="nav-ico">▦</span>采集数据
+      </button>
+      <button class="nav-item" data-view="records" data-title="录像回放" data-sub="在线预览，无需下载">
+        <span class="nav-ico">▶</span>录像回放
+      </button>
+
+      <div class="nav-group">账户</div>
+      <button class="nav-item" data-view="plans" data-title="套餐与账单" data-sub="按配置计费，扫码即开通">
+        <span class="nav-ico">◈</span>套餐与账单
+      </button>
     </nav>
-    <div class="actions">
-      <label class="switch"><input type="checkbox" id="autoRefresh" checked /> 自动刷新</label>
-      <button class="btn ghost" id="refreshBtn">刷新</button>
+
+    <div class="sidebar-foot">
+      <div id="adminEntry" hidden><a href="/admin">进入后台管理 →</a></div>
+      <div id="verText" style="margin-top:6px"></div>
     </div>
-  </header>
+  </aside>
 
-  <main>
-    <!-- 概览 -->
-    <section class="view active" id="view-overview">
-      <div id="hostAlert" hidden></div>
-      <div class="stat-grid" id="statGrid"></div>
-      <div class="card">
-        <h2>运行环境</h2>
-        <div id="sysInfo" class="kv"></div>
+  <!-- 主区 -->
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h1 class="page-title" id="pageTitle">工作台</h1>
+        <div class="page-sub" id="pageSub"></div>
       </div>
-      <div class="card">
-        <h2>最近事件</h2>
-        <div id="overviewEvents" class="log"></div>
-      </div>
-    </section>
+      <div class="spacer"></div>
+      <label class="switch" title="每 15 秒刷新一次列表">
+        <input type="checkbox" id="autoRefresh" checked /> 自动刷新
+      </label>
+      <label class="switch">主题 <select id="themePicker"></select></label>
+      <button class="btn ghost small" id="refreshBtn">刷新</button>
+    </header>
 
-    <!-- 设备 -->
-    <section class="view" id="view-devices">
-      <div class="card">
-        <h2>新建设备</h2>
-        <form id="deviceForm" class="form-row">
-          <label>名称<input name="name" required placeholder="douyin-01" /></label>
-          <label>宽<input name="width" type="number" placeholder="720" /></label>
-          <label>高<input name="height" type="number" placeholder="1280" /></label>
-          <label>DPI<input name="dpi" type="number" placeholder="320" /></label>
-          <label>代理<select name="proxy_id" id="deviceProxySelect"><option value="">直连</option></select></label>
-          <label>套餐<select name="plan_id" id="devicePlanSelect"><option value="">不绑定（自用）</option></select></label>
-          <label class="switch"><input type="checkbox" name="enable_audio" checked /> 声音</label>
-          <label class="switch"><input type="checkbox" name="autostart" checked /> 创建后启动</label>
-          <button class="btn primary" type="submit">创建</button>
-        </form>
-        <p class="hint">安卓首次启动要 1-3 分钟。启动后点「打开控制台」装 APK、登录账号。选了套餐时分辨率与内存按套餐规格生效。</p>
-      </div>
-      <div id="deviceList" class="device-grid"></div>
-    </section>
-
-    <!-- 代理 -->
-    <section class="view" id="view-proxies">
-      <div class="card">
-        <h2>新增代理</h2>
-        <form id="proxyForm" class="form-row">
-          <label>名称<input name="name" required placeholder="hk-01" /></label>
-          <label>类型<select name="scheme">
-            <option value="socks5">socks5</option>
-            <option value="socks5h">socks5h</option>
-            <option value="http">http</option>
-            <option value="https">https</option>
-          </select></label>
-          <label>主机<input name="host" required placeholder="1.2.3.4" /></label>
-          <label>端口<input name="port" type="number" required placeholder="1080" /></label>
-          <label>用户名<input name="username" placeholder="可空" /></label>
-          <label>密码<input name="password" type="password" placeholder="可空" /></label>
-          <label>备注<input name="remark" placeholder="可空" /></label>
-          <button class="btn primary" type="submit">保存</button>
-        </form>
-        <p class="hint">代理会以 tun 全局透明方式接管安卓容器的全部流量（含 UDP 与 DNS），不需要在 App 里配。</p>
-      </div>
-      <div class="card">
-        <table class="table" id="proxyTable">
-          <thead><tr><th>ID</th><th>名称</th><th>地址</th><th>状态</th><th>出口 IP</th><th>归属</th><th>检测时间</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 任务 -->
-    <section class="view" id="view-tasks">
-      <div class="card">
-        <h2>新建监控任务</h2>
-        <form id="taskForm" class="form-row">
-          <label>名称<input name="name" required placeholder="某主播晚场" /></label>
-          <label>平台<select name="platform">
-            <option value="douyin">抖音</option>
-            <option value="xiaohongshu">小红书</option>
-          </select></label>
-          <label class="grow">直播间标识<input name="target" required placeholder="抖音: room_id / live.douyin.com/123456；小红书: 直播链接或 24 位用户 id" /></label>
-          <label>设备<select name="device_id" id="taskDeviceSelect"></select></label>
-          <label>间隔(秒)<input name="interval_seconds" type="number" value="60" min="10" /></label>
-          <label class="switch"><input type="checkbox" name="collect_products" checked /> 采商品</label>
-          <label class="switch"><input type="checkbox" name="collect_comments" /> 采弹幕</label>
-          <label class="switch"><input type="checkbox" name="record_video" /> 录屏</label>
-          <label class="switch"><input type="checkbox" name="enabled" checked /> 启用</label>
-          <button class="btn primary" type="submit">创建</button>
-        </form>
-      </div>
-      <div class="card">
-        <table class="table" id="taskTable">
-          <thead><tr><th>ID</th><th>名称</th><th>平台</th><th>目标</th><th>设备</th><th>间隔</th><th>状态</th><th>次数</th><th>下次</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 数据 -->
-    <section class="view" id="view-data">
-      <div class="card">
-        <div class="form-row">
-          <label>任务<select id="dataTaskSelect"></select></label>
-          <button class="btn ghost" id="dataReload">加载</button>
+    <main class="content">
+      <!-- 总览 -->
+      <section class="view" id="view-home">
+        <div id="quotaAlert" hidden></div>
+        <div class="stat-grid" id="statGrid"></div>
+        <div class="grid-2">
+          <div class="card">
+            <h2>我的云手机</h2>
+            <div id="homeDevices"></div>
+          </div>
+          <div class="card">
+            <h2>快速开始</h2>
+            <ol class="hint" style="line-height:2;margin:0;padding-left:18px">
+              <li>在「云手机」新建一台实例，等安卓开机（约 1-2 分钟）</li>
+              <li>去「应用市场」把抖音 / 小红书装进去，点「打开」直接在本页操作</li>
+              <li>在云手机里扫码登录账号</li>
+              <li>到「监控任务」填直播间标识，开始定时采集</li>
+            </ol>
+            <div class="btn-group" style="margin-top:14px">
+              <button class="btn primary" data-goto="devices">新建云手机</button>
+              <button class="btn" data-goto="store">去应用市场</button>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="card">
-        <h2>直播间快照</h2>
-        <table class="table" id="snapshotTable">
-          <thead><tr><th>时间</th><th>状态</th><th>标题</th><th>主播</th><th>在线</th><th>点赞</th><th>商品数</th><th>截图</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <div class="grid-2">
+      </section>
+
+      <!-- 云手机 -->
+      <section class="view" id="view-devices">
         <div class="card">
-          <h2>最近一次商品列表</h2>
-          <table class="table" id="productTable">
-            <thead><tr><th>#</th><th>商品</th><th>价格</th><th>原价</th><th>销量</th><th>库存</th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <h2>新建云手机</h2>
+          <form id="deviceForm" class="form-row">
+            <label>名称<input name="name" required placeholder="douyin-01" /></label>
+            <label>套餐<select name="plan_id" id="devicePlanSelect"></select></label>
+            <label>宽<input name="width" type="number" placeholder="720" /></label>
+            <label>高<input name="height" type="number" placeholder="1280" /></label>
+            <label>DPI<input name="dpi" type="number" placeholder="320" /></label>
+            <label class="switch"><input type="checkbox" name="enable_audio" checked /> 声音</label>
+            <label class="switch"><input type="checkbox" name="autostart" checked /> 创建后开机</label>
+            <button class="btn primary" type="submit">创建</button>
+          </form>
+          <p class="hint" id="deviceFormHint">选了套餐时，分辨率与内存按套餐规格生效。</p>
+        </div>
+        <div id="deviceList" class="device-grid"></div>
+      </section>
+
+      <!-- 应用市场 -->
+      <section class="view" id="view-store">
+        <div class="card tight">
+          <div class="form-row tight">
+            <label>安装到<select id="storeDevice"></select></label>
+            <label class="grow">自有安装包<input type="file" id="storeFile" accept=".apk" /></label>
+            <button class="btn" id="storeUpload">上传并安装</button>
+            <label class="grow">apk 直链<input type="text" id="storeUrl" placeholder="https://.../app.apk" /></label>
+            <button class="btn" id="storeUrlInstall">下载安装</button>
+          </div>
+          <div id="storeJob" class="img-row" hidden style="margin-top:10px">
+            <div class="progress" style="max-width:260px"><div class="bar" id="storeJobBar"></div></div>
+            <span class="img-sub" id="storeJobMsg"></span>
+          </div>
+        </div>
+
+        <div class="section-head"><h2>应用市场</h2><span class="sub">装好后点「打开」，画面直接在本页弹出</span></div>
+        <div class="app-grid" id="storeGrid"></div>
+
+        <div class="section-head" style="margin-top:22px"><h2>已装应用</h2><span class="sub" id="installedHint"></span></div>
+        <div class="app-grid" id="installedGrid"></div>
+      </section>
+
+      <!-- 监控任务 -->
+      <section class="view" id="view-tasks">
+        <div class="card">
+          <h2>新建监控任务</h2>
+          <form id="taskForm" class="form-row">
+            <label>名称<input name="name" required placeholder="某主播晚场" /></label>
+            <label>平台<select name="platform">
+              <option value="douyin">抖音</option>
+              <option value="xiaohongshu">小红书</option>
+            </select></label>
+            <label class="grow">直播间标识<input name="target" required placeholder="抖音 room_id / live.douyin.com 链接；小红书 直播链接或 24 位用户 id" /></label>
+            <label>云手机<select name="device_id" id="taskDeviceSelect"></select></label>
+            <label>间隔(秒)<input name="interval_seconds" type="number" value="60" min="10" /></label>
+            <label class="switch"><input type="checkbox" name="collect_products" checked /> 采商品</label>
+            <label class="switch"><input type="checkbox" name="collect_comments" /> 采弹幕</label>
+            <label class="switch"><input type="checkbox" name="record_video" /> 录屏</label>
+            <label class="switch"><input type="checkbox" name="enabled" checked /> 启用</label>
+            <button class="btn primary" type="submit">创建</button>
+          </form>
         </div>
         <div class="card">
-          <h2>商品价格走势</h2>
-          <select id="productKeySelect"></select>
-          <div id="seriesChart" class="chart"></div>
-          <table class="table small" id="seriesTable">
-            <thead><tr><th>时间</th><th>价格</th><th>位次</th><th>销量</th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <div class="table-wrap">
+            <table class="table" id="taskTable">
+              <thead><tr><th>任务</th><th>平台</th><th>目标</th><th>云手机</th><th>间隔</th><th>状态</th><th>次数</th><th>下次</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- 录像 -->
-    <section class="view" id="view-recordings">
-      <div class="grid-2">
-        <div class="card">
-          <h2>录像列表</h2>
-          <table class="table" id="recordingTable">
-            <thead><tr><th>ID</th><th>任务/设备</th><th>状态</th><th>开始</th><th>时长</th><th>大小</th><th>操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
+      <!-- 采集数据 -->
+      <section class="view" id="view-data">
+        <div class="card tight">
+          <div class="form-row tight">
+            <label>任务<select id="dataTaskSelect"></select></label>
+            <button class="btn" id="dataReload">加载</button>
+          </div>
         </div>
         <div class="card">
-          <h2>在线预览 <span class="sub" id="playerTitle"></span></h2>
-          <video id="player" class="player" controls preload="metadata" playsinline></video>
-          <p class="hint">支持拖动进度（服务端按 Range 分片返回，不用先下载整个文件）</p>
+          <h2>直播间快照</h2>
+          <div class="table-wrap">
+            <table class="table" id="snapshotTable">
+              <thead><tr><th>时间</th><th>状态</th><th>标题</th><th>主播</th><th>在线</th><th>点赞</th><th>商品</th><th>截图</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    </section>
+        <div class="grid-2">
+          <div class="card">
+            <h2>最近一次商品列表</h2>
+            <div class="table-wrap">
+              <table class="table" id="productTable">
+                <thead><tr><th>#</th><th>商品</th><th>价格</th><th>原价</th><th>销量</th><th>库存</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>商品价格走势</h2>
+            <select id="productKeySelect" style="max-width:100%"></select>
+            <div id="seriesChart" class="chart"></div>
+            <div class="table-wrap">
+              <table class="table small" id="seriesTable">
+                <thead><tr><th>时间</th><th>价格</th><th>位次</th><th>销量</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
 
-    <!-- 应用 -->
-    <section class="view" id="view-apps">
-      <div class="card">
-        <h2>上传安装包</h2>
-        <div class="form-row">
-          <label>选择 apk<input type="file" id="apkFileGlobal" accept=".apk" /></label>
-          <label>安装到<select id="apkTargetDevice"></select></label>
-          <button class="btn primary" id="btnUploadGlobal">上传并安装</button>
-          <button class="btn ghost" id="btnUploadOnly">只上传</button>
+      <!-- 录像 -->
+      <section class="view" id="view-records">
+        <div class="grid-2">
+          <div class="card">
+            <h2>录像列表</h2>
+            <div class="table-wrap">
+              <table class="table" id="recordingTable">
+                <thead><tr><th>ID</th><th>来源</th><th>状态</th><th>开始</th><th>时长</th><th>大小</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>在线预览 <span class="sub" id="playerTitle"></span></h2>
+            <video id="player" class="player" controls preload="metadata" playsinline></video>
+            <p class="hint">服务端按 Range 分片返回，可直接拖进度，不用先下载整个文件。</p>
+          </div>
         </div>
-        <p class="hint">上传到 apks/ 目录后可重复安装到任意设备，不必每台都传一遍。</p>
-      </div>
-      <div class="grid-2">
+      </section>
+
+      <!-- 套餐 -->
+      <section class="view" id="view-plans">
         <div class="card">
-          <h2>应用目录</h2>
-          <table class="table" id="catalogTable">
-            <thead><tr><th>应用</th><th>包名</th><th>来源</th><th>操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
-          <p class="hint" id="catalogFileHint"></p>
+          <h2>我的额度</h2>
+          <div class="kv" id="quotaInfo"></div>
         </div>
+        <div class="plan-grid" id="planGrid"></div>
         <div class="card">
-          <h2>已上传的安装包</h2>
-          <table class="table" id="localApkTable">
-            <thead><tr><th>文件</th><th>大小</th><th>操作</th></tr></thead>
-            <tbody></tbody>
-          </table>
+          <h2>订单记录</h2>
+          <div class="table-wrap">
+            <table class="table" id="orderTable">
+              <thead><tr><th>订单号</th><th>套餐</th><th>金额</th><th>渠道</th><th>状态</th><th>创建</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
-      </div>
-    </section>
-
-    <!-- 套餐 -->
-    <section class="view" id="view-plans">
-      <div class="card" id="quotaCard">
-        <h2>我的额度</h2>
-        <div class="kv" id="quotaInfo"></div>
-      </div>
-      <div class="plan-grid" id="planGrid"></div>
-      <div class="card">
-        <h2>订单</h2>
-        <table class="table" id="orderTable">
-          <thead><tr><th>订单号</th><th>套餐</th><th>金额</th><th>渠道</th><th>状态</th><th>创建</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- 后台 -->
-    <section class="view" id="view-admin">
-      <div class="card">
-        <h2>支付与计费配置</h2>
-        <div class="kv" id="billingConfig"></div>
-        <p class="hint">这些值来自 .env，改完重启控制器生效。真实收款前请把 PAYMENT_CHANNELS 从 mock 换成 alipay/wechat。</p>
-      </div>
-      <div class="card">
-        <h2>新增套餐（规格决定价格）</h2>
-        <form id="planForm" class="form-row">
-          <label>标识<input name="code" required placeholder="pro-plus" /></label>
-          <label>名称<input name="name" required placeholder="专业增强版" /></label>
-          <label>宽<input name="width" type="number" value="1080" /></label>
-          <label>高<input name="height" type="number" value="1920" /></label>
-          <label>DPI<input name="dpi" type="number" value="420" /></label>
-          <label>内存MB<input name="memory_mb" type="number" value="6144" /></label>
-          <label>CPU核<input name="cpu_limit" type="number" step="0.5" value="4" /></label>
-          <label>设备数<input name="max_devices" type="number" value="3" /></label>
-          <label>任务数<input name="max_tasks" type="number" value="15" /></label>
-          <label>天数<input name="duration_days" type="number" value="30" /></label>
-          <label>价格(元)<input name="price_yuan" type="number" step="0.01" value="299" /></label>
-          <label>原价(元)<input name="original_price_yuan" type="number" step="0.01" placeholder="可空" /></label>
-          <label class="switch"><input type="checkbox" name="allow_proxy" checked /> 含代理</label>
-          <label class="switch"><input type="checkbox" name="allow_recording" checked /> 含录屏</label>
-          <label class="switch"><input type="checkbox" name="allow_audio" checked /> 含声音</label>
-          <button class="btn primary" type="submit">创建</button>
-        </form>
-      </div>
-      <div class="card">
-        <h2>套餐定价</h2>
-        <table class="table" id="planAdminTable">
-          <thead><tr><th>ID</th><th>标识</th><th>名称</th><th>规格</th><th>配额</th><th>周期</th><th>价格</th><th>上架</th><th>操作</th></tr></thead>
-          <tbody></tbody>
-        </table>
-        <p class="hint">价格与规格可直接在表格里改，失焦即保存。设了 ADMIN_TOKEN 时需在下方填入。</p>
-        <div class="form-row">
-          <label>X-Admin-Token<input type="password" id="adminToken" placeholder="未设置则留空" /></label>
-          <button class="btn ghost" id="btnSaveToken">记住</button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 事件 -->
-    <section class="view" id="view-events">
-      <div class="card">
-        <h2>事件日志</h2>
-        <div id="eventLog" class="log"></div>
-      </div>
-    </section>
-  </main>
-
-  <div class="modal" id="modal" hidden>
-    <div class="modal-box">
-      <div class="modal-head">
-        <h3 id="modalTitle">标题</h3>
-        <button class="btn ghost" id="modalClose">关闭</button>
-      </div>
-      <div class="modal-body" id="modalBody"></div>
-    </div>
+      </section>
+    </main>
   </div>
+</div>
 
-  <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=__ASSET_V__"></script>
+<div class="modal" id="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><h3 id="modalTitle"></h3><button class="btn ghost small" id="modalClose">关闭</button></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/common.js?v=__ASSET_V__"></script>
+<script src="/static/app.js?v=__ASSET_V__"></script>
 </body>
 </html>

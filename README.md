@@ -22,10 +22,12 @@
 | 能力 | 说明 |
 | --- | --- |
 | 安卓虚拟机 | redroid 容器化安卓，单机可跑多实例，`/data` 持久化（保留登录态） |
-| 设备控制台 | 一台设备一个页面：干净的屏幕（noVNC 精简页，无多余工具栏）+ 安卓三大金刚 + 常用按键 |
+| 前后台分离 | 用户前台 `/` 只有云手机、应用市场、任务、数据、录像、套餐；运维与定价在后台 `/admin`（`X-Admin-Token` 保护） |
+| 主题可选 | 深色 / 深蓝 / 浅色 / 高对比四套主题，顶栏随时切换，选择记在浏览器本地 |
+| 设备控制台 | 一台设备一个页面：干净的屏幕（自带极简投屏页，无多余工具栏）+ 安卓三大金刚 + 常用按键 |
 | 声音 | 设备音频经 scrcpy → PulseAudio → ffmpeg 转 mp3 流，网页里直接听，音量可调（网页音量 + 设备媒体音量） |
 | 外部文本粘贴 | 浏览器里的文字一键送进安卓，中文可用（原生剪贴板 → ADBKeyboard → input text 三级回退） |
-| 应用安装 | 上传 apk、粘贴直链下载、内置应用目录（应用商店）三种方式，带下载/安装进度；支持启动与卸载 |
+| 应用市场 | 卡片式列表，上传 apk / 粘贴直链 / 内置应用目录三种装法，带进度条；**装完点「打开」直接在当前页面弹出画面操作**，不用跳页 |
 | IP 代理 | 每设备一个网关容器，SOCKS5 / HTTP 代理全局透明接管（含 UDP、DNS 防泄漏、kill switch） |
 | 直播间监控 | 定时进入直播间，抓标题、主播、在线人数、点赞、弹幕 |
 | 商品监控 | 打开购物袋/商品列表，抓商品名、价格、划线价、库存/销量、排序位次 |
@@ -42,11 +44,12 @@
 | Linux（Ubuntu 22.04+ / Debian 12+，x86_64 或 arm64） | 可用 | 可用 |
 | macOS / Windows 的 Docker Desktop | **不可用**（LinuxKit 内核不含 binder，无法通过配置修复） | 可用 |
 
-控制台首页会自动检测并给出提示，也可以直接查：
+后台 `/admin` →「宿主自检」会直接给出结论和修复步骤，也可以命令行查：
 
 ```bash
 make check-host                              # 宿主自检
-curl -s localhost:8000/api/system/host-check # 控制器视角的内核能力
+# 控制器视角的内核能力（后台接口，设了 ADMIN_TOKEN 就要带头）
+curl -s -H "X-Admin-Token: $ADMIN_TOKEN" localhost:8000/api/system/host-check
 ```
 
 Linux 宿主准备：
@@ -101,25 +104,53 @@ make up                         # 启动控制器
 open http://localhost:8000      # Web 控制台
 ```
 
-安卓镜像不用敲命令：控制台首页「安卓镜像」那一行点 **立即拉取**，带进度条。
+安卓镜像不用敲命令：后台 `/admin` →「系统概览」→ 镜像那一行点 **拉取镜像**，带进度条。
 也可以照旧 `make pull-android`。
 
-把抖音 / 小红书 APK 放进 `apks/` 目录（文件名建议 `douyin.apk`、`xiaohongshu.apk`），
-控制台 → 设备卡片 → **安装 APK** 即可推进容器。
+抖音 / 小红书没有稳定官方直链，需要自备安装包：把 APK 拖到前台「应用市场」的
+**自有安装包 → 上传并安装**，或放进 `apks/` 目录后在下拉里选。装完点卡片上的「打开」
+就能在当前页面操作。
 
 ### 典型流程
 
-1. 控制台「代理」页新增代理，例如 `socks5://user:pass@1.2.3.4:1080`，点「测试」确认出口 IP。
-2. 「设备」页新建设备，选择分辨率与代理 → 启动。等状态变 `running`。
-3. 点设备卡上的 **VNC**，在浏览器里手动装 APK、登录账号（扫码 / 短信）。
-4. 「任务」页新建监控任务：平台 + 直播间标识（抖音 `webcast_id`/短链、小红书 `user_id`/直播链接）+ 采集间隔 + 是否录屏。
-5. 「数据」页看直播间快照与商品变动曲线；「录像」页下载 mp4。
+1. **后台** `/admin` →「代理池」新增代理，例如 `socks5://user:pass@1.2.3.4:1080`，点「验证」确认出口 IP。
+2. 前台 `/` →「云手机」新建实例，选套餐或直接填分辨率 → 创建即开机。等状态变 `running`。
+3. 「应用市场」把抖音 / 小红书装进去，点「打开」在当前页面弹出画面，扫码登录账号。
+4. 「监控任务」新建任务：平台 + 直播间标识（抖音 `webcast_id`/短链、小红书 `user_id`/直播链接）+ 采集间隔 + 是否录屏。
+5. 「采集数据」看直播间快照与商品变动曲线；「录像回放」在网页里直接看，不用下载。
+
+## 界面：用户前台 / 后台管理
+
+三个页面，同一套设计系统与主题：
+
+| 路径 | 给谁用 | 内容 |
+| --- | --- | --- |
+| `/` | 用户 | 总览、云手机、应用市场、监控任务、采集数据、录像回放、套餐与账单 |
+| `/admin` | 管理员 | 系统概览与镜像拉取、设备运维（容器状态/日志/adb shell/UI 树）、代理池、定价管理、订单与权益、支付配置、宿主自检、事件日志 |
+| `/console?device=<id>` | 用户 | 单设备控制台：屏幕 + 快捷操作 + 声音 + 粘贴 + 应用 |
+
+后台内容前台一律不可见，边界画在**接口**上而不是只藏按钮：
+
+```bash
+ADMIN_TOKEN=随便一串长字符串       # .env，设完重启控制器
+```
+
+- 挂了守卫的接口：`/api/proxies/*`、`/api/billing/plans`（写）、`/api/billing/config`、
+  `/api/system/{info,images,containers,host-check,platforms,selectors/reload}`、`/api/events`、
+  `/api/devices/{id}/{logs,shell,deeplink,ui}`。无令牌返回 401
+- 前台开放的：设备增删启停、应用安装、任务、数据、录像、套餐购买
+- `/admin` 页面本身是静态文件，进去先要输令牌（存浏览器 localStorage），令牌失效会自动退回登录框
+- `ADMIN_TOKEN` **留空时不拦**（方便本地自用），此时前台会露出后台入口，后台顶部也会挂一条
+  「后台没有设置访问密码」的警示。对外部署前必须设上
+
+主题在任意页面顶栏的「主题」下拉里切：深色（默认）/ 深蓝 / 浅色 / 高对比。
+实现是 CSS 变量 + `<html data-theme>`，只换一组令牌，组件不用改。
 
 ## 设备控制台
 
-设备卡片上点「打开控制台」，或直接访问 `/console?device=<id>`。左边是屏幕，右边是操作区：
+设备卡片上点「控制台」，或直接访问 `/console?device=<id>`。左边是屏幕，右边是操作区：
 
-- **屏幕**：用 noVNC 自带的 `vnc_lite.html`，只有画面，没有工具栏和设置面板；比例按设备分辨率自适应
+- **屏幕**：本项目自带的极简投屏页 `screen.html`（直接调 noVNC 的 RFB 内核），只有画面，没有工具栏和设置面板
 - **导航键**：屏幕正下方是安卓三大金刚（返回 / 主页 / 最近任务），另有电源、菜单、回车、退格、Tab、Esc
 - **声音**：顶栏「声音」开关 + 网页音量条；右侧还有设备侧媒体音量（直接写进安卓）
 - **粘贴外部文本**：粘到文本框点一下就进安卓，支持中文
@@ -152,7 +183,8 @@ open http://localhost:8000      # Web 控制台
 
 ## 商业化：套餐、定价与支付
 
-「套餐」页给用户下单，「后台」页给运营改价改配置。
+前台「套餐与账单」给用户下单，后台 `/admin` →「定价管理」给运营改价改规格
+（表格里直接改分辨率、内存、CPU、设备数、价格，失焦即保存），「订单与权益」看收款与额度发放。
 
 - **不同配置不同价格**：套餐规格包含分辨率、DPI、内存、CPU 核数、设备数、任务数、
   是否含代理/录屏/声音、有效天数。用套餐开出来的设备会按规格限制容器资源（`mem_limit` / `cpu_quota`）
@@ -199,8 +231,12 @@ controller/app/
     payments/      支付通道（alipay / wechat / mock，可插拔）
   platforms/       抖音 / 小红书采集适配器 + 可外部覆写的选择器配置
   api/             REST 接口（devices / apps / billing / recordings / data / system）
-  web/             控制台前端（原生 HTML/JS，无构建步骤）
-    index.html     总控制台：概览/设备/应用/代理/任务/数据/录像/套餐/后台/事件
+  web/             前端（原生 HTML/JS，无构建步骤；已 bind mount，改完刷新即生效）
+    theme.css      设计令牌 + 四套主题
+    style.css      组件层（只用变量，不写死颜色）
+    common.js      公共设施：主题、请求、提示、弹窗、令牌、侧栏导航
+    index.html     用户前台：总览/云手机/应用市场/任务/数据/录像/套餐
+    admin.html     后台管理：系统/设备运维/代理/定价/订单/支付/宿主自检/事件
     console.html   单设备控制台：屏幕 + 快捷操作 + 声音 + 粘贴 + 应用
   apps_catalog.yaml  应用目录（应用商店条目，可用 APPS_CATALOG_FILE 覆盖）
 scripts/           宿主机准备与运维脚本
@@ -212,7 +248,8 @@ data/              运行期数据（db / 截图 / 录像 / 安卓 /data 卷）
 App 每次改版，UI 控件都可能变。所有 UI 定位规则都在
 `controller/app/platforms/selectors/*.yaml`，支持挂载覆盖（见 `.env` 的 `SELECTORS_DIR`），
 改 YAML 即可修复采集，不用改代码、不用重新构建镜像。
-调试方式：控制台设备卡 →「UI Dump」，拿到当前页面完整控件树。
+调试方式：后台 `/admin` →「设备运维」→「UI 树」，拿到当前页面完整控件树；
+改完在「宿主自检」页点 **热加载选择器 YAML** 即生效。
 
 ## 常见问题
 
@@ -276,9 +313,9 @@ docker logs ldm_vnc_1 | grep '^\[vnc'
 
 ### 采不到商品 / 采到的字段是空的
 
-App 改版了。用控制台设备卡上的 **UI Dump** 看当前界面真实控件树，
-再对着调 `controller/app/platforms/selectors/*.yaml`，改完调用
-`POST /api/system/selectors/reload` 热加载，不用重启容器。
+App 改版了。用后台「设备运维」里的 **UI 树** 看当前界面真实控件树，
+再对着调 `controller/app/platforms/selectors/*.yaml`，改完在后台「宿主自检」页点
+**热加载选择器 YAML**（即 `POST /api/system/selectors/reload`），不用重启容器。
 
 ### 控制台里没有画面
 
@@ -299,6 +336,52 @@ python3 scripts/check-vnc-handshake.py localhost 21001   # 换成设备的 noVNC
 > 不要用 noVNC 自带的 `vnc_lite.html`：1.3 版里它的缩放参数叫 `scale`（不是 `resize`），
 > 而且实测在 iframe 里握手会停在 ProtocolVersion 不往下走（x11vnc 日志是
 > `rfbProcessClientProtocolVersion: client gone`，传输 0 字节）。
+
+### 画面一直显示「正在连接」/ 画面不稳定
+
+一条命令体检，它会把「容器侧断链」和「浏览器整页重载」分开：
+
+```bash
+./scripts/check-screen-health.sh 1 10     # 设备ID 观察分钟数
+```
+
+判读方式：
+
+| 现象 | 含义 |
+| --- | --- |
+| `scrcpy 启动次数 > 1` | 投屏进程在反复重启，看 `docker exec ldm_vnc_1 cat /tmp/scrcpy.log` |
+| VNC 连接次数每 10 秒左右规律增长 | 浏览器在反复重载 iframe（前端问题） |
+| 日志里有 `rfbProcessClientProtocolVersion: client gone` | 页面 JS 没走完 RFB 握手 |
+| 事件流里 `投屏状态 disconnected` 频繁 | 真的在断链，看网络与容器负载 |
+
+控制台会把浏览器侧的投屏状态回报到服务端（事件流里 `source=screen`），
+所以这类问题不用靠猜。设计上做了这些约束来避免「假性不稳定」：
+
+- iframe 的 `src` 只在地址真的变化时才赋值，轮询设备状态不会重载画面
+- 断线时**就地重建 RFB**（1s→8s 退避），不做整页 `location.reload()`
+- 「正在连接」遮罩只在确实没连上时显示，连上后不会被轮询重新盖上
+- 遮罩上的「重试」只让画面重连，不重载整个控制台
+
+### 控制台显示「设备还没准备好」但设备列表是 running
+
+先确认设备是不是真的在跑（`停止` 按钮点过一次就会整组停掉）：
+
+```bash
+curl -s localhost:8000/api/devices/1 | python3 -m json.tool | grep -E "status|container_states|screen_ready"
+```
+
+`screen_ready` 为 true 才代表安卓容器和画面容器都在跑、画面可连。
+设备停了的时候控制台遮罩上会直接给一个「启动设备」按钮，不用回列表页。
+
+容器是被谁停的可以查访问日志与事件流：
+
+```bash
+docker logs ldm_controller | grep -E "devices/[0-9]+/(stop|restart|start)"
+docker inspect ldm_android_1 --format '{{.State.ExitCode}} oom={{.State.OOMKilled}}'
+```
+
+`exit=137 oom=false` 且三个容器依次退出 = 正常的 stop（SIGTERM 后超时被 KILL）；
+`oom=true` 才是内存不够，需要给虚拟机加内存或调小套餐规格。
 
 ### 画面比手机屏幕大 / 被拉伸
 
@@ -343,8 +426,8 @@ docker logs ldm_vnc_1 | grep '^\[audio'                                  # 音�
 
 ### 代理配了但出口 IP 没变
 
-点代理列表里的「测试」，它会起一个一次性网关容器实测出口 IP。
-设备侧点「查出口 IP」是在该设备的网关容器里实测。两者不一致时看网关日志：
+后台「代理池」里点「验证」，它会起一个一次性网关容器实测出口 IP。
+「设备运维」里点「测出口」是在该设备的网关容器里实测。两者不一致时看网关日志：
 
 ```bash
 curl -s "localhost:8000/api/devices/1/logs?role=gw&tail=100"

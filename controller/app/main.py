@@ -79,7 +79,10 @@ if WEB_DIR.exists():
 def _asset_version() -> str:
     """用静态资源的 mtime 生成版本号，改完前端刷新页面即生效，不会吃到浏览器缓存。"""
     stamps = []
-    for name in ("style.css", "app.js", "console.css", "console.js"):
+    for name in (
+        "theme.css", "style.css", "common.js", "app.js",
+        "admin.js", "console.css", "console.js",
+    ):
         f = WEB_DIR / name
         stamps.append(str(int(f.stat().st_mtime)) if f.exists() else "0")
     return hashlib.md5("-".join(stamps).encode()).hexdigest()[:10]
@@ -99,6 +102,12 @@ def _render_page(filename: str):  # noqa: ANN202
 @app.get("/", include_in_schema=False)
 def index():  # noqa: ANN201
     return _render_page("index.html")
+
+
+@app.get("/admin", include_in_schema=False)
+def admin_console():  # noqa: ANN201
+    """后台管理端。页面本身是静态的，真正的门在接口上（X-Admin-Token）。"""
+    return _render_page("admin.html")
 
 
 @app.get("/console", include_in_schema=False)

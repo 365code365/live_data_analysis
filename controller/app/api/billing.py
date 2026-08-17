@@ -14,17 +14,10 @@ from ..core.payments.base import PaymentError
 from ..db import get_session
 from ..models import Entitlement, Order, OrderStatus, Plan
 from ..schemas import Ok, OrderCreate, PlanCreate, PlanUpdate
+from .deps import require_admin
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing", tags=["billing"])
-
-
-def require_admin(x_admin_token: Optional[str] = Header(default=None)) -> None:
-    """后台定价类接口的简单保护：设了 ADMIN_TOKEN 就必须带对应请求头。"""
-    if not settings.admin_token:
-        return
-    if x_admin_token != settings.admin_token:
-        raise HTTPException(401, "需要正确的 X-Admin-Token")
 
 
 # ── 套餐（前台只读，后台可写）──────────────────────────────────────────────

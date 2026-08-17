@@ -1,0 +1,120 @@
+/* ─────────────────────────────────────────────────────────────────────
+   设计令牌 + 主题
+   所有颜色都走变量，换主题只换 :root 上的一组值，组件不用改。
+   主题通过 <html data-theme="..."> 切换，选择记在 localStorage。
+   ───────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0e13;
+  --bg-soft: #0f131a;
+  --panel: #141922;
+  --panel-2: #1b2230;
+  --panel-3: #222b3a;
+  --border: #262f3d;
+  --border-strong: #354154;
+  --text: #e8edf5;
+  --text-2: #b6c2d3;
+  --muted: #7d8ba0;
+  --accent: #4c8dff;
+  --accent-soft: rgba(76, 141, 255, .14);
+  --accent-text: #06101f;
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, .13);
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, .13);
+  --err: #f87171;
+  --err-soft: rgba(248, 113, 113, .13);
+  --shadow: 0 8px 24px rgba(0, 0, 0, .35);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, .25);
+}
+
+/* 深蓝：适合长时间盯屏，对比度比纯黑柔和 */
+[data-theme="midnight"] {
+  color-scheme: dark;
+  --bg: #0a1020;
+  --bg-soft: #0d1527;
+  --panel: #121c33;
+  --panel-2: #17233e;
+  --panel-3: #1e2c4c;
+  --border: #24325180;
+  --border-strong: #33456b;
+  --text: #e6ecff;
+  --text-2: #b3c0e0;
+  --muted: #7885a8;
+  --accent: #6aa8ff;
+  --accent-soft: rgba(106, 168, 255, .16);
+  --accent-text: #04101f;
+  --ok: #3ddc97;
+  --ok-soft: rgba(61, 220, 151, .14);
+  --warn: #ffc75a;
+  --warn-soft: rgba(255, 199, 90, .14);
+  --err: #ff7b7b;
+  --err-soft: rgba(255, 123, 123, .14);
+  --shadow: 0 10px 30px rgba(2, 8, 23, .5);
+  --shadow-sm: 0 2px 10px rgba(2, 8, 23, .4);
+}
+
+/* 浅色：白天、投屏演示、打印友好 */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f4f6fa;
+  --bg-soft: #eef1f7;
+  --panel: #ffffff;
+  --panel-2: #f5f7fb;
+  --panel-3: #e9eef7;
+  --border: #dfe5ee;
+  --border-strong: #c6d0de;
+  --text: #16202f;
+  --text-2: #3d4a5c;
+  --muted: #6b7788;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, .1);
+  --accent-text: #ffffff;
+  --ok: #059669;
+  --ok-soft: rgba(5, 150, 105, .1);
+  --warn: #b45309;
+  --warn-soft: rgba(180, 83, 9, .1);
+  --err: #dc2626;
+  --err-soft: rgba(220, 38, 38, .1);
+  --shadow: 0 8px 24px rgba(15, 23, 42, .08);
+  --shadow-sm: 0 1px 4px rgba(15, 23, 42, .06);
+}
+
+/* 高对比：弱光环境或投影仪 */
+[data-theme="contrast"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-soft: #060606;
+  --panel: #0d0d0d;
+  --panel-2: #171717;
+  --panel-3: #212121;
+  --border: #3a3a3a;
+  --border-strong: #5a5a5a;
+  --text: #ffffff;
+  --text-2: #e0e0e0;
+  --muted: #a0a0a0;
+  --accent: #ffd400;
+  --accent-soft: rgba(255, 212, 0, .16);
+  --accent-text: #000000;
+  --ok: #00e676;
+  --ok-soft: rgba(0, 230, 118, .14);
+  --warn: #ffab00;
+  --warn-soft: rgba(255, 171, 0, .14);
+  --err: #ff5252;
+  --err-soft: rgba(255, 82, 82, .14);
+  --shadow: none;
+  --shadow-sm: none;
+}
+
+:root {
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --sidebar-w: 208px;
+  --topbar-h: 56px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}

@@ -2,63 +2,55 @@
 (() => {
   'use strict';
 
-  const $ = (s, r = document) => r.querySelector(s);
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // 主题、请求、提示、弹窗都用 common.js 里的公共实现，三个页面保持一致
+  const { $, esc, api, toast, modal, bindModal, mountThemePicker } = window.LDM;
 
   const deviceId = Number(new URLSearchParams(location.search).get('device') || 0);
-  const state = { device: null, timer: null, jobTimer: null, recording: false, unmaskTimer: null };
+  const state = {
+    device: null, timer: null, jobTimer: null, recording: false,
+    unmaskTimer: null, maskShown: false,
+    screenConnected: false, screenInstance: null, screenReloads: 0, frameUrl: null,
+  };
 
   // ── 基础 ────────────────────────────────────────────────────────────
-  async function api(path, { method = 'GET', body, form } = {}) {
-    const opts = { method, headers: {} };
-    if (form) {
-      opts.body = form;
-    } else if (body !== undefined) {
-      opts.headers['Content-Type'] = 'application/json';
-      opts.body = JSON.stringify(body);
-    }
-    const res = await fetch(path, opts);
-    if (!res.ok) {
-      let detail = res.statusText;
-      try { const j = await res.json(); detail = j.detail || j.message || detail; } catch (_) {}
-      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
-    }
-    return res.status === 204 ? null : res.json();
-  }
-
-  let toastTimer = null;
-  function toast(msg, kind = '') {
-    const el = $('#toast');
-    el.textContent = msg;
-    el.className = `toast ${kind}`;
-    el.hidden = false;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.hidden = true; }, kind === 'err' ? 6000 : 2600);
-  }
-
-  function modal(title, html) {
-    $('#modalTitle').textContent = title;
-    $('#modalBody').innerHTML = html;
-    $('#modal').hidden = false;
-    $('#modal').classList.add('open');
-  }
-  function closeModal() {
-    $('#modal').hidden = true;
-    $('#modal').classList.remove('open');
-    $('#modalBody').innerHTML = '';
-  }
-  $('#modalClose').addEventListener('click', closeModal);
-  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  bindModal();
+  mountThemePicker($('#themePicker'));
 
   function mask(title, body) {
     $('#maskTitle').textContent = title;
     $('#maskBody').textContent = body || '';
     $('#screenMask').hidden = false;
+    state.maskShown = true;
   }
-  const unmask = () => { $('#screenMask').hidden = true; };
-  $('#maskRetry').addEventListener('click', () => location.reload());
+  function unmask() {
+    $('#screenMask').hidden = true;
+    state.maskShown = false;
+  }
+  $('#maskStart').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    mask('正在启动设备…', '安卓首次开机约 1-2 分钟，起来后画面会自动出现');
+    try {
+      await api(`/api/devices/${deviceId}/start`, { method: 'POST' });
+      toast('已启动，等安卓开机', 'ok');
+    } catch (err) {
+      mask('启动失败', err.message);
+    } finally {
+      e.target.disabled = false;
+      loadDevice().catch(() => {});
+    }
+  });
+
+  // 重试只让画面重连，不重载整个控制台（省得音量、粘贴框这些状态全丢）
+  $('#maskRetry').addEventListener('click', () => {
+    state.screenConnected = false;
+    mask('正在重新连接…', '');
+    const frame = $('#vncFrame');
+    if (frame.contentWindow) {
+      frame.contentWindow.postMessage({ target: 'ldm-screen', action: 'reconnect' }, '*');
+    } else if (state.frameUrl) {
+      frame.src = state.frameUrl;
+    }
+  });
 
   // ── 加载设备 ────────────────────────────────────────────────────────
   async function loadDevice() {
@@ -68,14 +60,21 @@
     $('#devMeta').textContent = `${d.width}×${d.height} @${d.dpi}dpi · ${d.proxy_name || '直连'}`;
     document.title = `${d.name} · 设备控制台`;
 
-    applyZoom();
+    // 分辨率变了才重算尺寸，别每轮都动布局
+    if (state.lastGeom !== `${d.width}x${d.height}`) {
+      state.lastGeom = `${d.width}x${d.height}`;
+      applyZoom();
+    }
 
     const cs = d.container_states || {};
-    const ok = cs.vnc === 'running' && cs.android === 'running';
+    // screen_ready 由服务端算；老接口没有这个字段时退回自己判断
+    const ok = d.screen_ready !== undefined && d.screen_ready !== null
+      ? d.screen_ready
+      : (cs.vnc === 'running' && cs.android === 'running');
     $('#liveDot').style.background = ok ? 'var(--ok)' : 'var(--err)';
     $('#liveDot').style.boxShadow = `0 0 8px ${ok ? 'var(--ok)' : 'var(--err)'}`;
 
-    $('#devStatus').innerHTML = [
+    const statusHtml = [
       ['状态', `<span class="badge ${d.status}">${esc(d.status)}</span>`],
       ['容器', ['gw', 'android', 'vnc'].map((r) => {
         const st = cs[r];
@@ -85,19 +84,35 @@
       ['规格', `${d.memory_mb ? d.memory_mb + 'MB' : '内存不限'} · ${d.cpu_limit ? d.cpu_limit + ' 核' : 'CPU 不限'}`],
       ['声音', d.enable_audio ? `已开启（端口 ${d.audio_port || '-'}）` : '已关闭'],
     ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+    // 内容没变就不重写 DOM，避免无谓的重排
+    if ($('#devStatus').innerHTML !== statusHtml) $('#devStatus').innerHTML = statusHtml;
 
     $('#btnRecord').textContent = d.recording ? '停止录屏' : '开始录屏';
     state.recording = !!d.recording;
 
     if (!ok) {
-      const info = await api(`/api/devices/${deviceId}/vnc`).catch(() => null);
-      mask('设备还没准备好', (info && info.problem) || '容器未全部就绪，启动后自动恢复');
+      state.screenConnected = false;
+      state.frameUrl = null;
+      $('#vncFrame').removeAttribute('src');
+      const stopped = d.status === 'stopped' || !cs.android;
+      const info = stopped ? null : await api(`/api/devices/${deviceId}/vnc`).catch(() => null);
+      mask(
+        stopped ? '设备已停止' : '设备还没准备好',
+        stopped
+          ? `容器状态：网关 ${cs.gw || '未运行'} / 安卓 ${cs.android || '未运行'} / 画面 ${cs.vnc || '未运行'}\n点下面的「启动设备」拉起来，安卓开机约 1-2 分钟。`
+          : (info && info.problem) || '容器未全部就绪，启动后自动恢复',
+      );
+      $('#maskStart').hidden = !stopped;
       return;
     }
+    $('#maskStart').hidden = true;
 
-    // 兜底：万一投屏页没回状态（比如镜像是旧版），别一直挡着画面
-    if (!state.unmaskTimer) {
+    // 只有「还没连上」时才盖遮罩。
+    // 之前每轮轮询都无条件重新盖一次，画面明明是好的却一直显示「正在连接」。
+    if (!state.screenConnected && !state.maskShown) {
       mask('正在连接画面…', '');
+      // 兜底：投屏页没回状态（比如镜像是旧版）也不能一直挡着
+      clearTimeout(state.unmaskTimer);
       state.unmaskTimer = setTimeout(() => {
         state.unmaskTimer = null;
         unmask();
@@ -108,10 +123,11 @@
     // 直接用 noVNC 的 RFB 内核，只渲染画面，没有任何自带 UI。
     const url = `http://${location.hostname}:${d.novnc_port}/screen.html`
       + `?password=${encodeURIComponent(d.vnc_password || '')}&scale=1&reconnect=1`;
-    const frameEl = $('#vncFrame');
-    if (frameEl.dataset.url !== url) {
-      frameEl.dataset.url = url;
-      frameEl.src = url;
+    // 只在第一次（或地址真的变了）赋值 src。
+    // 每次轮询都赋值会让 iframe 整页重载，画面就会一直闪。
+    if (state.frameUrl !== url) {
+      state.frameUrl = url;
+      $('#vncFrame').src = url;
     }
     setupAudio(d);
   }
@@ -134,8 +150,16 @@
 
     frame.style.width = `${Math.round(d.width * scale)}px`;
     frame.style.height = `${Math.round(d.height * scale)}px`;
-    $('#zoomInfo').textContent =
-      `${d.width}×${d.height} · ${Math.round(scale * 100)}%${scale >= 0.999 ? '（原始像素）' : ''}`;
+
+    const pct = Math.round(scale * 100);
+    const info = $('#zoomInfo');
+    info.textContent = `${d.width}×${d.height} · ${pct}%`;
+    // 选了 100% 却被压到更小，说明窗口放不下，要讲清楚原因
+    const clamped = mode !== 'fit' && Math.abs(scale - Number(mode)) > 0.01;
+    info.title = clamped
+      ? `窗口高度不够，${Math.round(Number(mode) * 100)}% 放不下，已按 ${pct}% 显示`
+      : (pct >= 100 ? '与手机屏幕同样的物理像素' : '等比缩小，不失真');
+    info.style.color = clamped ? 'var(--warn)' : '';
   }
 
   $('#zoomSelect').addEventListener('change', (e) => {
@@ -144,22 +168,64 @@
   });
   window.addEventListener('resize', () => applyZoom());
 
-  // 投屏页把连接状态抛过来，这样黑屏时能看到真实原因
+  // 投屏页把连接状态抛过来：黑屏/断线时能看到真实原因，
+  // 同时上报到服务端，方便事后查「画面为什么不稳」。
   window.addEventListener('message', (e) => {
     const data = e.data || {};
     if (data.source !== 'ldm-screen') return;
-    if (data.state === 'connected') {
-      clearTimeout(state.unmaskTimer);
-      state.unmaskTimer = null;
-      unmask();
-    } else if (data.state === 'auth_required' || data.state === 'auth_failed') {
-      mask('VNC 认证失败', `${data.detail || ''}\n设备的 VNC 密码可能被改过，重启设备可重新下发。`);
-    } else if (data.state === 'disconnected') {
-      mask('画面连接中断', '正在自动重连…');
-    } else if (data.state === 'error') {
-      mask('画面加载失败', data.detail || '');
+
+    if (data.instance && data.instance !== state.screenInstance) {
+      // instance 变了说明投屏页整页重载过（正常的就地重连不会换 instance）
+      if (state.screenInstance) state.screenReloads = (state.screenReloads || 0) + 1;
+      state.screenInstance = data.instance;
     }
+
+    switch (data.state) {
+      case 'connected':
+        state.screenConnected = true;
+        clearTimeout(state.unmaskTimer);
+        state.unmaskTimer = null;
+        unmask();
+        break;
+      case 'connecting':
+        state.screenConnected = false;
+        break;
+      case 'auth_required':
+      case 'auth_failed':
+        state.screenConnected = false;
+        mask('VNC 认证失败', `${data.detail || ''}\n设备的 VNC 密码可能被改过，重启设备可重新下发。`);
+        break;
+      case 'disconnected':
+        state.screenConnected = false;
+        mask('画面连接中断', '正在自动重连…');
+        break;
+      case 'error':
+        state.screenConnected = false;
+        mask('画面加载失败', data.detail || '');
+        break;
+      default:
+        break;
+    }
+    reportScreenState(data);
   });
+
+  // 只上报状态变化，不刷流水
+  let lastReported = '';
+  function reportScreenState(data) {
+    const key = `${data.state}|${data.detail || ''}`;
+    if (key === lastReported) return;
+    lastReported = key;
+    fetch(`/api/devices/${deviceId}/screen-report`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        state: data.state,
+        detail: data.detail || '',
+        instance: data.instance || '',
+        reloads: state.screenReloads || 0,
+      }),
+    }).catch(() => { /* 上报失败不影响使用 */ });
+  }
 
   // ── 声音 ────────────────────────────────────────────────────────────
   function setupAudio(d) {
@@ -447,7 +513,7 @@
     } catch (err) {
       mask('加载失败', err.message);
     }
-    state.timer = setInterval(() => loadDevice().catch(() => {}), 10000);
+    state.timer = setInterval(() => loadDevice().catch(() => {}), 15000);
   }
 
   boot();

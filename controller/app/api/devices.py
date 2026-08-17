@@ -9,13 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFi
 from sqlmodel import Session, select
 
 from ..config import settings
-from ..core import apps, collector, device_service, host
+from ..core import apps, collector, device_service, events, host
 from ..core.android import get_device
 from ..core.device_service import DeviceError
 from ..core.docker_manager import DockerError, get_docker
 from ..core.recorder import recorder
 from ..db import get_session
 from ..models import Device, ProxyProfile
+from .deps import require_admin
 from ..schemas import (
     AppInstall,
     DeeplinkAction,
@@ -25,6 +26,7 @@ from ..schemas import (
     PasteText,
     RecordStart,
     RotateAction,
+    ScreenReport,
     ShellCommand,
     SwipeAction,
     TapAction,
@@ -85,10 +87,16 @@ def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, 
             "android": device.android_container,
             "vnc": device.vnc_container,
         },
-        # 容器真实状态；None 表示本次没查（详情接口用 /status 拿更全的信息）
+        # 容器真实状态；None 表示本次没查
         "container_states": cstate,
         "android_running": (cstate or {}).get("android") == "running" if cstate is not None else None,
         "vnc_running": (cstate or {}).get("vnc") == "running" if cstate is not None else None,
+        # 画面能不能连：安卓和画面容器都得在跑
+        "screen_ready": (
+            (cstate or {}).get("android") == "running" and (cstate or {}).get("vnc") == "running"
+            if cstate is not None
+            else None
+        ),
         "data_volume": device.data_volume,
         "recording": recorder.is_recording(int(device.id)) if device.id else False,
         "last_error": device.last_error,
@@ -118,7 +126,9 @@ def create_device(payload: DeviceCreate, session: Session = Depends(get_session)
 @router.get("/{device_id}")
 def get_device_detail(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
-    return _out(session, device)
+    # 详情也要带容器真实状态：设备控制台靠它判断画面能不能连，
+    # 之前只有列表接口有，控制台就永远显示「设备还没准备好」。
+    return _out(session, device, _container_states())
 
 
 @router.patch("/{device_id}")
@@ -192,7 +202,7 @@ def device_egress(device_id: int, session: Session = Depends(get_session)) -> di
         raise HTTPException(400, str(exc)) from exc
 
 
-@router.get("/{device_id}/logs")
+@router.get("/{device_id}/logs", dependencies=[Depends(require_admin)])
 def device_logs(
     device_id: int,
     role: str = Query("gw", pattern="^(gw|android|vnc)$"),
@@ -285,7 +295,7 @@ def launch_app(device_id: int, package: str, session: Session = Depends(get_sess
 
 
 # ── 交互 ──────────────────────────────────────────────────────────────────
-@router.post("/{device_id}/shell")
+@router.post("/{device_id}/shell", dependencies=[Depends(require_admin)])
 def run_shell(device_id: int, payload: ShellCommand, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
     dev = get_device(device.adb_addr)
@@ -316,7 +326,7 @@ def keyevent(device_id: int, keycode: str, session: Session = Depends(get_sessio
     return Ok()
 
 
-@router.post("/{device_id}/deeplink")
+@router.post("/{device_id}/deeplink", dependencies=[Depends(require_admin)])
 def open_deeplink(device_id: int, payload: DeeplinkAction, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
     out = get_device(device.adb_addr).open_deeplink(payload.uri, payload.package)
@@ -417,7 +427,7 @@ def screenshot(device_id: int, session: Session = Depends(get_session)) -> Respo
     return Response(content=data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
-@router.get("/{device_id}/ui")
+@router.get("/{device_id}/ui", dependencies=[Depends(require_admin)])
 def ui_dump(
     device_id: int,
     platform: Optional[str] = Query(None, description="传 douyin/xiaohongshu 会顺带跑一遍提取规则"),
@@ -457,6 +467,28 @@ def stop_record(device_id: int, session: Session = Depends(get_session)) -> dict
     if recording_id is None:
         raise HTTPException(404, "该设备当前没有在录屏")
     return {"recording_id": recording_id}
+
+
+@router.post("/{device_id}/screen-report")
+def screen_report(device_id: int, payload: ScreenReport, session: Session = Depends(get_session)) -> Ok:
+    """浏览器把投屏连接状态回报上来，写进事件流。
+
+    「画面不稳定」这类问题只看服务端日志是断不了案的：分不清是容器侧断链、
+    还是浏览器整页重载。这里记录状态与页面实例，事后一看就知道。
+    """
+    device = _get(session, device_id)
+    level = {"connected": "info", "connecting": "debug"}.get(payload.state, "warning")
+    if payload.state in {"auth_failed", "auth_required", "error"}:
+        level = "error"
+    events.emit(
+        f"投屏状态 {payload.state}"
+        + (f"（{payload.detail}）" if payload.detail else "")
+        + (f" 页面重载 {payload.reloads} 次" if payload.reloads else ""),
+        level=level,
+        source="screen",
+        device_id=device.id,
+    )
+    return Ok()
 
 
 @router.get("/{device_id}/vnc")

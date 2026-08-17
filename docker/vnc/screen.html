@@ -10,105 +10,144 @@
   #screen { width: 100%; height: 100%; }
   #screen canvas { display: block; }
   #msg {
-    position: fixed; inset: 0; display: none;
-    align-items: center; justify-content: center; text-align: center;
-    color: #8b98a8; background: #0a0d11; padding: 20px;
-    font: 13px/1.7 -apple-system, "PingFang SC", sans-serif;
+    position: fixed; left: 0; right: 0; bottom: 0; display: none;
+    color: #cbd5e1; background: rgba(10, 13, 17, .82);
+    padding: 8px 12px; text-align: center;
+    font: 12px/1.5 -apple-system, "PingFang SC", sans-serif;
   }
-  #msg.show { display: flex; }
+  #msg.show { display: block; }
 </style>
 </head>
 <body>
 <div id="screen"></div>
 <div id="msg"></div>
 <script type="module">
-// 直接用 noVNC 的 RFB 内核，不用它自带的 vnc.html / vnc_lite.html：
-//   * vnc.html 会带一条控制栏（产品里不需要）
-//   * vnc_lite.html 是 demo 页，1.3 里参数名是 scale 而非 resize，
+// 直接用 noVNC 的 RFB 内核，不用它自带的页面：
+//   * vnc.html 带一条控制栏，产品里不需要
+//   * vnc_lite.html 是 demo：1.3 里缩放参数叫 scale（不是 resize），
 //     且实测在 iframe 里握手会停在 ProtocolVersion 不往下走
 import RFB from './core/rfb.js';
 
 const q = new URLSearchParams(location.search);
+const holder = document.getElementById('screen');
 const msgBox = document.getElementById('msg');
 
+// 每个页面实例一个 id：父页面据此区分「整页重载」和「就地重连」
+const instance = Math.random().toString(36).slice(2, 10);
+
 function notify(state, detail) {
-  // 把连接状态抛给父页面，让控制台能显示真实原因而不是一片黑
   try {
-    parent.postMessage({ source: 'ldm-screen', state, detail: detail || '' }, '*');
+    parent.postMessage({ source: 'ldm-screen', state, detail: detail || '', instance }, '*');
   } catch (_) { /* 跨域不可达时忽略 */ }
 }
-
-function showMsg(text) {
-  msgBox.textContent = text;
-  msgBox.classList.add('show');
-}
+function showMsg(text) { msgBox.textContent = text; msgBox.classList.add('show'); }
 function hideMsg() { msgBox.classList.remove('show'); }
 
 const proto = location.protocol === 'https:' ? 'wss' : 'ws';
 const url = `${proto}://${location.host}/${q.get('path') || 'websockify'}`;
 
-showMsg('正在连接…');
-notify('connecting');
+let rfb = null;
+let retry = 0;
+let retryTimer = null;
+let connected = false;
 
-let rfb;
-try {
-  rfb = new RFB(document.getElementById('screen'), url, {
-    credentials: { password: q.get('password') || '' },
-    shared: true,
-    wsProtocols: ['binary'],
-  });
-} catch (err) {
-  showMsg('创建连接失败: ' + err.message);
-  notify('error', err.message);
-  throw err;
+function applyOptions() {
+  // scale=1（默认）：画面缩放到铺满 iframe。父页面会把 iframe 尺寸算成
+  // 设备分辨率 × 缩放比（上限 1:1），所以不会出现放大失真。
+  rfb.scaleViewport = q.get('scale') !== '0';
+  // 不让浏览器去改安卓端分辨率，那会把设备真实屏幕尺寸改掉
+  rfb.resizeSession = false;
+  rfb.clipViewport = false;
+  rfb.background = '#000';
+  rfb.viewOnly = q.get('view_only') === '1';
+  rfb.focusOnClick = true;
+  rfb.qualityLevel = Number(q.get('quality') || 6);
+  rfb.compressionLevel = Number(q.get('compression') || 2);
 }
 
-// scale=1（默认）：画面缩放到铺满 iframe。父页面会把 iframe 尺寸算成
-// 设备分辨率 × 缩放比（且不超过 1:1），所以这里不会出现放大失真。
-rfb.scaleViewport = q.get('scale') !== '0';
-// 不让浏览器去改安卓端分辨率，那会把设备真实屏幕尺寸改掉
-rfb.resizeSession = false;
-rfb.clipViewport = false;
-rfb.background = '#000';
-rfb.viewOnly = q.get('view_only') === '1';
-rfb.focusOnClick = true;
-rfb.qualityLevel = Number(q.get('quality') || 6);
-rfb.compressionLevel = Number(q.get('compression') || 2);
+function bindEvents() {
+  rfb.addEventListener('connect', () => {
+    connected = true;
+    retry = 0;
+    hideMsg();
+    notify('connected');
+    try { rfb.focus(); } catch (_) {}
+  });
 
-rfb.addEventListener('connect', () => {
-  hideMsg();
-  notify('connected');
-  try { rfb.focus(); } catch (_) {}
-});
+  rfb.addEventListener('disconnect', (e) => {
+    const clean = !!(e.detail && e.detail.clean);
+    connected = false;
+    notify('disconnected', clean ? 'clean' : 'unclean');
+    if (q.get('reconnect') === '0') {
+      showMsg('连接已断开');
+      return;
+    }
+    reconnectSoon();
+  });
 
-rfb.addEventListener('disconnect', (e) => {
-  const clean = e.detail && e.detail.clean;
-  showMsg(clean ? '连接已断开' : '连接中断，正在重连…');
-  notify('disconnected', clean ? 'clean' : 'unclean');
-  if (q.get('reconnect') !== '0') {
-    setTimeout(() => location.reload(), 3000);
+  rfb.addEventListener('credentialsrequired', () => {
+    showMsg('需要 VNC 密码（链接里的 password 参数不正确）');
+    notify('auth_required');
+  });
+
+  rfb.addEventListener('securityfailure', (e) => {
+    const reason = (e.detail && e.detail.reason) || '认证失败';
+    showMsg('认证失败: ' + reason);
+    notify('auth_failed', reason);
+  });
+}
+
+function connect() {
+  clearTimeout(retryTimer);
+  retryTimer = null;
+  if (rfb) {
+    try { rfb.disconnect(); } catch (_) {}
+    rfb = null;
   }
-});
+  // RFB 会往容器里塞 canvas，重连前清干净，避免叠加多个画布
+  holder.innerHTML = '';
+  notify('connecting');
+  try {
+    rfb = new RFB(holder, url, {
+      credentials: { password: q.get('password') || '' },
+      shared: true,
+      wsProtocols: ['binary'],
+    });
+  } catch (err) {
+    showMsg('创建连接失败: ' + err.message);
+    notify('error', err.message);
+    return;
+  }
+  applyOptions();
+  bindEvents();
+}
 
-rfb.addEventListener('credentialsrequired', () => {
-  showMsg('需要 VNC 密码（链接里的 password 参数不正确）');
-  notify('auth_required');
-});
+function reconnectSoon() {
+  if (retryTimer) return;
+  retry += 1;
+  // 就地重建 RFB，不用 location.reload()：整页重载会重新拉 JS、重开 WebSocket，
+  // 画面明显闪一下；断线稍频繁时看起来就是「一直在连接」。
+  // 退避 1s→8s，避免疯狂重连把 x11vnc 打满。
+  const delay = Math.min(8000, 1000 * retry);
+  showMsg(`连接中断，${Math.round(delay / 1000)} 秒后重连（第 ${retry} 次）`);
+  retryTimer = setTimeout(connect, delay);
+}
 
-rfb.addEventListener('securityfailure', (e) => {
-  const reason = (e.detail && e.detail.reason) || '认证失败';
-  showMsg('认证失败: ' + reason);
-  notify('auth_failed', reason);
-});
-
-// 父页面可以让画面重连，或者转发按键
+// 父页面可以让画面重连或转发按键
 window.addEventListener('message', (e) => {
   const data = e.data || {};
   if (data.target !== 'ldm-screen') return;
-  if (data.action === 'reload') location.reload();
-  if (data.action === 'focus') { try { rfb.focus(); } catch (_) {} }
-  if (data.action === 'ctrlaltdel') { try { rfb.sendCtrlAltDel(); } catch (_) {} }
+  if (data.action === 'reconnect') { retry = 0; connect(); }
+  if (data.action === 'focus' && rfb) { try { rfb.focus(); } catch (_) {} }
+  if (data.action === 'ctrlaltdel' && rfb) { try { rfb.sendCtrlAltDel(); } catch (_) {} }
 });
+
+// 标签页切回前台时，如果连接已经断了就立刻重连，别等退避计时
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && !connected && !retryTimer) { retry = 0; connect(); }
+});
+
+connect();
 </script>
 </body>
 </html>
