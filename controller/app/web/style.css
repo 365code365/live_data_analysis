@@ -135,6 +135,10 @@ input, select, textarea {
   padding: 8px 10px; font-size: 13px; min-width: 90px; font-family: inherit;
   transition: border-color .15s, box-shadow .15s;
 }
+/* 数字输入框浏览器默认给到 ~180px，一行放不下几个就挤成一团。
+   表单里的数字框按内容给宽度，下拉也别无限拉长。 */
+.form-row input[type="number"] { width: 104px; min-width: 0; }
+.form-row select { max-width: 200px; }
 input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
 input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent);
@@ -287,11 +291,17 @@ input[type="file"] { padding: 6px; }
 .device header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .device h3 { margin: 0; font-size: 15px; }
 .device .thumb {
+  /* 高度写死成比例：预览图是异步加载的，容器尺寸必须先占住，
+     否则图片一到就把下面的内容顶下去，看着就是卡片在抖。 */
   width: 100%; aspect-ratio: 16 / 10; background: var(--bg-soft);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   overflow: hidden; display: grid; place-items: center; cursor: pointer; position: relative;
 }
-.device .thumb img { width: 100%; height: 100%; object-fit: contain; }
+.device .thumb img {
+  /* 绝对定位：图片进出都不参与布局，不会挤到占位文字 */
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: contain;
+}
 .device .thumb .ph { color: var(--muted); font-size: 12px; text-align: center; padding: 10px; }
 .device .thumb .play {
   position: absolute; inset: 0; display: grid; place-items: center;

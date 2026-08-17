@@ -136,6 +136,41 @@
       <div class="empty-body">${esc(body)}</div>${action}</div>`;
   }
 
+  // ── 防抖 ────────────────────────────────────────────────────────────
+  /** 内容没变就不动 DOM。轮询刷新最容易踩的坑就是无脑重写 innerHTML：
+   *  节点被销毁重建，图片重新加载、滚动位置和输入焦点全丢，看起来就是页面在抖。 */
+  function setHTML(el, html) {
+    if (!el || el.innerHTML === html) return false;
+    el.innerHTML = html;
+    return true;
+  }
+
+  /** 下拉框同理：选项没变就别重写，否则用户正在选的值会被打回默认。 */
+  function setOptions(el, html) {
+    if (!el || el.innerHTML === html) return false;
+    const keep = el.value;
+    el.innerHTML = html;
+    if (keep && Array.from(el.options).some((o) => o.value === keep)) el.value = keep;
+    return true;
+  }
+
+  /** 合并高频触发（连续操作后只跑最后一次）。 */
+  function debounce(fn, ms = 250) {
+    let t = null;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), ms);
+    };
+  }
+
+  /** 用户正在操作时（打开弹窗、在输入框里）不要做自动刷新，否则会打断他。 */
+  function userBusy() {
+    const box = $('#modal');
+    if (box && !box.hidden) return true;
+    const el = document.activeElement;
+    return !!(el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) && el.type !== 'checkbox');
+  }
+
   // ── 视图切换（左侧导航）────────────────────────────────────────────
   function mountNav({ onChange } = {}) {
     const items = $$('.nav-item[data-view]');
@@ -161,6 +196,7 @@
   window.LDM = {
     $, $$, esc, api, toast, modal, closeModal, onModalClose, bindModal,
     fmtTime, fmtNum, fmtDur, fmtSize, yuan, empty,
+    setHTML, setOptions, debounce, userBusy,
     themes: THEMES, applyTheme, currentTheme, mountThemePicker,
     getToken, setToken, mountNav,
   };

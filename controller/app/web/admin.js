@@ -6,6 +6,7 @@
   const {
     $, esc, api, toast, modal, bindModal, fmtTime, fmtNum, fmtSize, yuan,
     empty, mountThemePicker, mountNav, getToken, setToken,
+    setHTML, userBusy,
   } = window.LDM;
 
   const S = {
@@ -75,7 +76,12 @@
   $('#autoRefresh').addEventListener('change', setupTimer);
   function setupTimer() {
     clearInterval(S.timer);
-    if ($('#autoRefresh').checked) S.timer = setInterval(() => refresh(), 15000);
+    if (!$('#autoRefresh').checked) return;
+    S.timer = setInterval(() => {
+      // 后台表格里能直接改定价，正在输入或开着弹窗时刷新会把值打回去
+      if (document.hidden || userBusy()) return;
+      refresh();
+    }, 15000);
   }
 
   // ── 系统概览 ────────────────────────────────────────────────────────
@@ -83,7 +89,7 @@
     const [info, stats] = await Promise.all([adminApi('/api/system/info'), api('/api/stats')]);
     const d = info.docker || {};
 
-    $('#statGrid').innerHTML = [
+    setHTML($('#statGrid'), [
       ['云手机', stats.devices, `${stats.devices_running} 台运行中`],
       ['监控任务', stats.tasks, `${stats.tasks_enabled} 个启用`],
       ['直播快照', stats.snapshots, '累计'],
@@ -92,11 +98,11 @@
       ['受管容器', (d.managed_containers || []).length, d.ok ? 'Docker 正常' : 'Docker 异常'],
     ].map(([label, num, trend]) => `
       <div class="stat"><div class="num">${fmtNum(num)}</div>
-        <div class="label">${esc(label)}</div><div class="trend">${esc(trend)}</div></div>`).join('');
+        <div class="label">${esc(label)}</div><div class="trend">${esc(trend)}</div></div>`).join(''));
 
     const tools = info.tools || {};
     const flag = (ok) => (ok ? '<span class="badge ok">可用</span>' : '<span class="badge error">缺失</span>');
-    $('#envInfo').innerHTML = kv([
+    setHTML($('#envInfo'), kv([
       ['控制器版本', esc(info.version)],
       ['Python', esc(info.python)],
       ['Docker', d.ok ? `<span class="badge ok">已连接</span> <span class="sub">${esc(d.server || '')}</span>`
@@ -107,10 +113,10 @@
       ['调度器', info.scheduler.running
         ? `<span class="badge ok">运行中</span> <span class="sub">${info.scheduler.jobs.length} 个作业</span>`
         : '<span class="badge error">未运行</span>'],
-    ]);
+    ]));
 
     const st = info.settings || {};
-    $('#settingsInfo').innerHTML = kv([
+    setHTML($('#settingsInfo'), kv([
       ['安卓镜像', `<code>${esc(st.redroid_image)}</code>`],
       ['网关镜像', `<code>${esc(st.gateway_image)}</code>`],
       ['画面镜像', `<code>${esc(st.vnc_image)}</code>`],
@@ -121,19 +127,19 @@
       ['录屏分段 / 码率', `${st.record_segment_seconds}s / ${fmtNum(st.record_bitrate)}`],
       ['选择器目录', st.selectors_dir ? `<code>${esc(st.selectors_dir)}</code>` : '<span class="sub">用内置</span>'],
       ['数据目录', `<code>${esc(st.data_dir)}</code>`],
-    ]);
+    ]));
 
     renderImages(d.image_details || []);
 
-    $('#jobTable tbody').innerHTML = info.scheduler.jobs.length
+    setHTML($('#jobTable tbody'), info.scheduler.jobs.length
       ? info.scheduler.jobs.map((j) => `
         <tr><td>${esc(j.name || j.id)}<span class="cell-sub">${esc(j.id)}</span></td>
         <td>${fmtTime(j.next_run_time)}</td><td><span class="cell-sub">${esc(j.trigger)}</span></td></tr>`).join('')
-      : '<tr><td colspan="3">没有作业</td></tr>';
+      : '<tr><td colspan="3">没有作业</td></tr>');
   }
 
   function renderImages(items) {
-    $('#imageList').innerHTML = items.map((i) => {
+    setHTML($('#imageList'), items.map((i) => {
       const job = i.job;
       const pulling = job && job.state === 'pulling';
       return `
@@ -154,7 +160,7 @@
         ${job && job.state === 'failed' ? `<div class="img-err" style="width:100%">${esc(job.error || '')}</div>` : ''}
         ${i.error ? `<div class="img-err" style="width:100%">${esc(i.error)}</div>` : ''}
       </div>`;
-    }).join('') || empty('▣', '读不到镜像信息', 'Docker 可能不可用，先看上面的运行环境。');
+    }).join('') || empty('▣', '读不到镜像信息', 'Docker 可能不可用，先看上面的运行环境。'));
 
     const anyPulling = items.some((i) => i.job && i.job.state === 'pulling');
     clearInterval(S.pullTimer);
@@ -200,7 +206,7 @@
     S.devices = devices;
     $('#navDevices').textContent = devices.length;
 
-    $('#deviceTable tbody').innerHTML = devices.length ? devices.map((d) => {
+    setHTML($('#deviceTable tbody'), devices.length ? devices.map((d) => {
       const cs = d.container_states || {};
       const chip = (role, label) => {
         const st = cs[role];
@@ -224,10 +230,10 @@
         </div></td>
       </tr>`;
     }).join('')
-      : `<tr><td colspan="8">${empty('▤', '还没有设备', '用户在前台创建云手机后会出现在这里。')}</td></tr>`;
+      : `<tr><td colspan="8">${empty('▤', '还没有设备', '用户在前台创建云手机后会出现在这里。')}</td></tr>`);
 
     const items = containers.items || [];
-    $('#containerTable tbody').innerHTML = items.length ? items.map((c) => `
+    setHTML($('#containerTable tbody'), items.length ? items.map((c) => `
       <tr>
         <td><span class="mono">${esc(c.name)}</span></td>
         <td>${esc(c.role || '-')}</td>
@@ -235,7 +241,7 @@
         <td><span class="badge ${c.status === 'running' ? 'ok' : 'error'}">${esc(c.status)}</span></td>
         <td><span class="cell-sub">${esc(c.image || '-')}</span></td>
       </tr>`).join('')
-      : `<tr><td colspan="5">${esc(containers.error || '没有受管容器')}</td></tr>`;
+      : `<tr><td colspan="5">${esc(containers.error || '没有受管容器')}</td></tr>`);
   }
 
   $('#deviceTable').addEventListener('click', async (e) => {
@@ -309,25 +315,25 @@
       adminApi('/api/system/host-check'), adminApi('/api/system/platforms'),
     ]);
     const yes = (ok) => (ok ? '<span class="badge ok">支持</span>' : '<span class="badge error">缺失</span>');
-    $('#hostInfo').innerHTML = kv([
+    setHTML($('#hostInfo'), kv([
       ['内核版本', `<code>${esc(caps.kernel)}</code>`],
       ['binder（安卓容器）', yes(caps.binder)],
       ['tun（代理网关）', yes(caps.tun)],
       ['Docker Desktop 内核', caps.docker_desktop ? '<span class="badge starting">是</span>' : '否'],
       ['能跑安卓容器', caps.android_supported ? '<span class="badge ok">可以</span>' : '<span class="badge error">不行</span>'],
-    ]);
-    $('#hostAlerts').innerHTML = (caps.hints || []).map((h) => `
+    ]));
+    setHTML($('#hostAlerts'), (caps.hints || []).map((h) => `
       <div class="alert"><div class="alert-title">宿主环境不满足条件</div>
       <div class="alert-body">${esc(h)}</div></div>`).join('')
-      || '<div class="alert info"><div class="alert-title">宿主环境正常</div><div class="alert-body">binder 与 tun 都就绪，安卓容器和代理网关都能跑。</div></div>';
+      || '<div class="alert info"><div class="alert-title">宿主环境正常</div><div class="alert-body">binder 与 tun 都就绪，安卓容器和代理网关都能跑。</div></div>');
 
-    $('#platformTable tbody').innerHTML = (plat.platforms || []).map((p) => `
+    setHTML($('#platformTable tbody'), (plat.platforms || []).map((p) => `
       <tr><td>${esc(p.display_name)}<span class="cell-sub">${esc(p.key)}</span></td>
       <td><span class="cell-sub">包名 ${esc(p.package || '未配置')}</span></td>
       <td>${(p.config_files || []).length
         ? p.config_files.map((f) => `<span class="cell-sub mono">${esc(f)}</span>`).join('')
         : '<span class="sub">用内置默认</span>'}</td></tr>`).join('')
-      || '<tr><td colspan="3">没有适配器</td></tr>';
+      || '<tr><td colspan="3">没有适配器</td></tr>');
   }
 
   $('#reloadSelectors').addEventListener('click', async (e) => {
@@ -345,11 +351,11 @@
     const level = $('#eventLevel').value;
     const limit = $('#eventLimit').value;
     const r = await adminApi(`/api/events?limit=${limit}${level ? `&level=${level}` : ''}`);
-    $('#eventLog').innerHTML = r.items.length ? r.items.map((ev) => `
+    setHTML($('#eventLog'), r.items.length ? r.items.map((ev) => `
       <div class="line ${esc(ev.level)}"><span class="ts">${fmtTime(ev.created_at)}</span>
       [${esc(ev.level)}] [${esc(ev.source)}]${ev.device_id ? ` 设备${ev.device_id}` : ''}${ev.task_id ? ` 任务${ev.task_id}` : ''}
       ${esc(ev.message)}</div>`).join('')
-      : '<div class="line info">暂无事件</div>';
+      : '<div class="line info">暂无事件</div>');
   }
   $('#eventReload').addEventListener('click', () => loadEvents().catch((e) => toast(e.message, 'err')));
   $('#eventLevel').addEventListener('change', () => loadEvents().catch((e) => toast(e.message, 'err')));
@@ -359,7 +365,7 @@
     const proxies = await adminApi('/api/proxies');
     S.proxies = proxies;
     $('#navProxies').textContent = proxies.length;
-    $('#proxyTable tbody').innerHTML = proxies.length ? proxies.map((p) => `
+    setHTML($('#proxyTable tbody'), proxies.length ? proxies.map((p) => `
       <tr data-id="${p.id}">
         <td>${esc(p.name)}<span class="cell-sub">#${p.id}${p.in_use ? ' · 使用中' : ''}</span></td>
         <td><span class="mono">${esc(p.url_masked)}</span></td>
@@ -374,7 +380,7 @@
           <button class="btn small danger" data-act="del">删除</button>
         </div></td>
       </tr>`).join('')
-      : `<tr><td colspan="7">${empty('⇄', '还没有代理', '加一条 socks5/http 代理，设备启动时会全局透明走它出网。')}</td></tr>`;
+      : `<tr><td colspan="7">${empty('⇄', '还没有代理', '加一条 socks5/http 代理，设备启动时会全局透明走它出网。')}</td></tr>`);
   }
 
   function proxyFormData() {
@@ -445,7 +451,7 @@
     const cell = (id, field, value, step) =>
       `<input class="cell" data-id="${id}" data-field="${field}" type="number"${step ? ` step="${step}"` : ''} value="${value ?? ''}" />`;
 
-    $('#planTable tbody').innerHTML = r.items.length ? r.items.map((p) => {
+    setHTML($('#planTable tbody'), r.items.length ? r.items.map((p) => {
       const s = p.spec;
       return `
       <tr data-id="${p.id}">
@@ -473,7 +479,7 @@
         </div></td>
       </tr>`;
     }).join('')
-      : `<tr><td colspan="14">${empty('◈', '还没有套餐', '上面填一个，前台「套餐与账单」立即可见。')}</td></tr>`;
+      : `<tr><td colspan="14">${empty('◈', '还没有套餐', '上面填一个，前台「套餐与账单」立即可见。')}</td></tr>`);
   }
 
   async function patchPlan(id, field, value) {
@@ -583,16 +589,16 @@
 
     const paid = orders.items.filter((o) => o.status === 'paid');
     const revenue = paid.reduce((sum, o) => sum + o.amount_cents, 0);
-    $('#orderStats').innerHTML = [
+    setHTML($('#orderStats'), [
       ['订单总数', orders.items.length, status ? `筛选: ${status}` : '全部状态'],
       ['已支付', paid.length, `待支付 ${orders.items.filter((o) => o.status === 'pending').length} 笔`],
       ['已收金额', yuan(revenue), '按当前筛选结果统计'],
       ['生效权益', (summary.active_entitlements || []).length, `云手机额度 ${summary.device_used}/${summary.device_quota}`],
     ].map(([label, num, trend]) => `
       <div class="stat"><div class="num">${typeof num === 'number' ? fmtNum(num) : esc(num)}</div>
-        <div class="label">${esc(label)}</div><div class="trend">${esc(trend)}</div></div>`).join('');
+        <div class="label">${esc(label)}</div><div class="trend">${esc(trend)}</div></div>`).join(''));
 
-    $('#orderTable tbody').innerHTML = orders.items.length ? orders.items.map((o) => `
+    setHTML($('#orderTable tbody'), orders.items.length ? orders.items.map((o) => `
       <tr>
         <td><span class="mono">${esc(o.order_no)}</span>${o.remark ? `<span class="cell-sub">${esc(o.remark)}</span>` : ''}</td>
         <td>${esc(o.plan_name || '-')}<span class="cell-sub">${esc(o.plan_code || '')}</span></td>
@@ -603,9 +609,9 @@
         <td><span class="cell-sub">${esc(o.trade_no || '-')}<br>${esc(o.buyer || '')}</span></td>
         <td><span class="cell-sub">${fmtTime(o.created_at)}</span></td>
         <td><span class="cell-sub">${fmtTime(o.paid_at)}</span></td>
-      </tr>`).join('') : '<tr><td colspan="8">没有订单</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="8">没有订单</td></tr>');
 
-    $('#entTable tbody').innerHTML = ents.items.length ? ents.items.map((x) => `
+    setHTML($('#entTable tbody'), ents.items.length ? ents.items.map((x) => `
       <tr>
         <td>${x.id}<span class="cell-sub mono">${esc(x.order_no || '')}</span></td>
         <td>${esc(x.plan_name)}<span class="cell-sub">${esc(x.plan_code || '')}</span></td>
@@ -615,7 +621,7 @@
         <td><span class="cell-sub">${fmtTime(x.started_at)}</span></td>
         <td><span class="cell-sub">${fmtTime(x.expires_at)}</span></td>
         <td><span class="badge ${x.status}">${esc(x.status)}</span></td>
-      </tr>`).join('') : '<tr><td colspan="8">还没有发放权益</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="8">还没有发放权益</td></tr>');
   }
   $('#orderReload').addEventListener('click', () => loadOrders().catch((e) => toast(e.message, 'err')));
   $('#orderStatus').addEventListener('change', () => loadOrders().catch((e) => toast(e.message, 'err')));
@@ -624,7 +630,7 @@
   async function loadPayCfg() {
     const cfg = await adminApi('/api/billing/config');
     const yes = (ok) => (ok ? '<span class="badge ok">已配置</span>' : '<span class="badge error">未配置</span>');
-    $('#payFlags').innerHTML = kv([
+    setHTML($('#payFlags'), kv([
       ['计费功能', cfg.billing_enabled ? '<span class="badge ok">已启用</span>' : '<span class="badge">未启用</span>'],
       ['强制付费', cfg.enforce ? '<span class="badge starting">是</span> <span class="sub">没权益不能开设备</span>' : '否 <span class="sub">可免费试用</span>'],
       ['站点地址', `<code>${esc(cfg.site_base_url)}</code>`],
@@ -632,17 +638,17 @@
       ['后台令牌', cfg.admin_token_set ? '<span class="badge ok">已设置</span>' : '<span class="badge error">未设置</span>'],
       ['支付宝商户', yes(cfg.alipay_configured)],
       ['微信商户', yes(cfg.wechat_configured)],
-    ]);
+    ]));
 
-    $('#channelTable tbody').innerHTML = (cfg.channels || []).map((c) => `
+    setHTML($('#channelTable tbody'), (cfg.channels || []).map((c) => `
       <tr><td><span class="mono">${esc(c.channel)}</span></td><td>${esc(c.label)}</td>
       <td>${c.ready ? '<span class="badge ok">可用</span>' : '<span class="badge error">不可用</span>'}</td>
       <td class="wrap"><span class="cell-sub">${esc(c.reason || c.display || '')}</span></td></tr>`).join('')
-      || '<tr><td colspan="4">没有启用任何渠道</td></tr>';
+      || '<tr><td colspan="4">没有启用任何渠道</td></tr>');
 
-    $('#notifyUrls').innerHTML = kv(
+    setHTML($('#notifyUrls'), kv(
       Object.entries(cfg.notify_urls || {}).map(([k, v]) => [k, `<code>${esc(v)}</code>`]),
-    );
+    ));
   }
 
   // ── 工具 ────────────────────────────────────────────────────────────

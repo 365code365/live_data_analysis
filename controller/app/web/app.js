@@ -6,12 +6,15 @@
   const {
     $, $$, esc, api, toast, modal, closeModal, onModalClose, bindModal,
     fmtTime, fmtNum, fmtDur, fmtSize, yuan, empty, mountThemePicker, mountNav,
+    setHTML, setOptions, userBusy,
   } = window.LDM;
 
   const S = {
     view: 'home', timer: null, devices: [], tasks: [], catalog: [], plans: [],
     channels: [], dataTaskId: null, storeJobTimer: null, payPoll: null, quota: null,
     fitFrame: null, // 画面弹窗当前用的尺寸换算函数（投屏页报回真实分辨率时要用）
+    thumbAt: {},    // 每台设备上次取预览图的时间，用来限流
+    thumbTimer: null,
   };
 
   bindModal();
@@ -29,8 +32,20 @@
   $('#autoRefresh').addEventListener('change', setupTimer);
   function setupTimer() {
     clearInterval(S.timer);
-    if ($('#autoRefresh').checked) S.timer = setInterval(() => refresh(), 15000);
+    clearInterval(S.thumbTimer);
+    if (!$('#autoRefresh').checked) return;
+    S.timer = setInterval(() => {
+      // 标签页在后台、弹窗开着、或用户正在填表单时不要刷，省得打断操作
+      if (document.hidden || userBusy()) return;
+      refresh();
+    }, 15000);
+    // 预览图单独一条更慢的节拍，跟列表刷新解耦
+    S.thumbTimer = setInterval(() => refreshThumbs(), 10000);
   }
+  // 切回前台时补一次，但不在后台空转
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && $('#autoRefresh').checked) refresh();
+  });
 
   // ── 后台入口只在验明身份后显示 ──────────────────────────────────────
   (async () => {
@@ -58,9 +73,9 @@
       ['商品记录', stats.products, '累计采集'],
       ['录像', stats.recordings, '可在线回放'],
     ];
-    $('#statGrid').innerHTML = cards.map(([label, num, trend]) => `
+    setHTML($('#statGrid'), cards.map(([label, num, trend]) => `
       <div class="stat"><div class="num">${fmtNum(num)}</div>
-        <div class="label">${label}</div><div class="trend">${esc(trend)}</div></div>`).join('');
+        <div class="label">${label}</div><div class="trend">${esc(trend)}</div></div>`).join(''));
 
     const alertBox = $('#quotaAlert');
     if (quota && quota.billing_enabled && quota.device_quota === 0) {
@@ -73,7 +88,7 @@
       alertBox.hidden = true;
     }
 
-    $('#homeDevices').innerHTML = devices.length
+    setHTML($('#homeDevices'), devices.length
       ? devices.slice(0, 5).map((d) => `
         <div class="img-row" style="padding:8px 0;border-bottom:1px solid var(--border)">
           <span class="badge ${d.status}">${esc(d.status)}</span>
@@ -83,7 +98,7 @@
           <a class="btn small primary" href="/console?device=${d.id}" target="_blank" rel="noopener">进入</a>
         </div>`).join('')
       : empty('▤', '还没有云手机', '创建一台安卓实例，装上抖音/小红书就能开始监控。',
-        '<button class="btn primary" data-goto="devices">新建云手机</button>');
+        '<button class="btn primary" data-goto="devices">新建云手机</button>'));
   }
 
   function updateBadges() {
@@ -106,40 +121,91 @@
     // 套餐下拉：只列还有名额的权益
     const idByCode = Object.fromEntries(S.plans.map((p) => [p.code, p.id]));
     const usable = (quota?.active_entitlements || []).filter((e) => e.remaining_devices > 0);
-    $('#devicePlanSelect').innerHTML =
+    // setOptions：选项没变就不重写，否则用户选好的套餐会被轮询打回默认值
+    setOptions($('#devicePlanSelect'),
       (quota?.enforce ? '' : '<option value="">不绑定（试用）</option>')
-      + usable.map((e) => `<option value="${idByCode[e.plan_code] || ''}">${esc(e.plan_name)}（剩 ${e.remaining_devices} 台）</option>`).join('');
-    $('#deviceFormHint').textContent = quota && quota.enforce && !usable.length
+      + usable.map((e) => `<option value="${idByCode[e.plan_code] || ''}">${esc(e.plan_name)}（剩 ${e.remaining_devices} 台）</option>`).join(''));
+    const hint = quota && quota.enforce && !usable.length
       ? '当前为强制付费模式，且没有可用名额，请先购买套餐。'
       : '选了套餐时，分辨率与内存按套餐规格生效；不绑定则按下面填的参数创建。';
+    if ($('#deviceFormHint').textContent !== hint) $('#deviceFormHint').textContent = hint;
 
-    $('#deviceList').innerHTML = devices.length ? devices.map(deviceCard).join('')
-      : empty('▤', '还没有云手机', '点上面的「创建」开一台，安卓开机约 1-2 分钟。');
-    devices.forEach((d) => { if (d.screen_ready) loadThumb(d.id); });
+    renderDevices(devices);
+    refreshThumbs();
   }
 
-  function deviceCard(d) {
+  // ── 设备卡片：就地更新，不重建 ──────────────────────────────────────
+  // 每 15 秒把整个网格 innerHTML 重写一遍的话，卡片节点被销毁重建，
+  // 预览图重新加载、按钮闪一下、滚动位置也可能跳，看着就是页面在抖。
+  // 所以这里按 id 找到已有卡片，只有内容真的变了才改对应的那一块，
+  // 预览图所在的节点永远不重写。
+  function renderDevices(devices) {
+    const list = $('#deviceList');
+    if (!devices.length) {
+      setHTML(list, empty('▤', '还没有云手机', '点上面的「创建」开一台，安卓开机约 1-2 分钟。'));
+      return;
+    }
+    if (list.querySelector('.empty')) list.innerHTML = '';
+
+    const alive = new Set(devices.map((d) => String(d.id)));
+    Array.from(list.children).forEach((el) => {
+      if (!alive.has(el.dataset.id)) el.remove();
+    });
+
+    devices.forEach((d, i) => {
+      let card = list.querySelector(`.device[data-id="${d.id}"]`);
+      if (!card) {
+        card = document.createElement('div');
+        card.className = 'device';
+        card.dataset.id = String(d.id);
+        card.innerHTML = `
+          <header data-part="head"></header>
+          <div class="thumb" data-act="open">
+            <div class="ph" id="thumb-ph-${d.id}"></div>
+            <img id="thumb-${d.id}" alt="" hidden />
+            <div class="play">点击进入控制台</div>
+          </div>
+          <div data-part="body"></div>`;
+        list.appendChild(card);
+      } else if (card !== list.children[i]) {
+        // 顺序变了就搬节点（appendChild 是移动而不是重建，不会丢预览图）
+        list.appendChild(card);
+      }
+
+      setHTML(card.querySelector('[data-part="head"]'), deviceHead(d));
+      setHTML(card.querySelector('[data-part="body"]'), deviceBody(d));
+
+      const ph = $(`#thumb-ph-${d.id}`);
+      const img = $(`#thumb-${d.id}`);
+      const text = d.screen_ready ? (img && img.src ? '' : '加载预览…') : '未开机';
+      if (ph.textContent !== text) ph.textContent = text;
+      // 关机了就把旧预览撤掉，别让人以为还在跑
+      if (!d.screen_ready && img && img.src) {
+        if (img.src.startsWith('blob:')) URL.revokeObjectURL(img.src);
+        img.removeAttribute('src');
+        img.hidden = true;
+      }
+      if (d.screen_ready && img && img.src) ph.hidden = true;
+      else ph.hidden = false;
+    });
+  }
+
+  function deviceHead(d) {
     const cs = d.container_states || {};
     const chip = (role, label) => {
       const st = cs[role];
       return `<span class="badge ${st === 'running' ? 'ok' : (st ? 'error' : '')}">${label}</span>`;
     };
     return `
-    <div class="device" data-id="${d.id}">
-      <header>
-        <h3>${esc(d.name)}</h3>
-        <span class="badge ${d.status}">${esc(d.status)}</span>
-        ${d.recording ? '<span class="badge recording">录屏中</span>' : ''}
-        <span style="flex:1"></span>
-        ${chip('gw', '网络')}${chip('android', '安卓')}${chip('vnc', '画面')}
-      </header>
+      <h3>${esc(d.name)}</h3>
+      <span class="badge ${d.status}">${esc(d.status)}</span>
+      ${d.recording ? '<span class="badge recording">录屏中</span>' : ''}
+      <span style="flex:1"></span>
+      ${chip('gw', '网络')}${chip('android', '安卓')}${chip('vnc', '画面')}`;
+  }
 
-      <div class="thumb" data-act="open">
-        <div class="ph" id="thumb-ph-${d.id}">${d.screen_ready ? '加载预览…' : '未开机'}</div>
-        <img id="thumb-${d.id}" alt="" hidden />
-        <div class="play">点击进入控制台</div>
-      </div>
-
+  function deviceBody(d) {
+    return `
       <div class="kv">
         <div class="k">规格</div><div class="v">${d.width}×${d.height} @${d.dpi}dpi ·
           ${d.memory_mb ? d.memory_mb + 'MB' : '内存不限'} · ${d.cpu_limit ? d.cpu_limit + ' 核' : 'CPU 不限'}</div>
@@ -147,7 +213,6 @@
         <div class="k">声音</div><div class="v">${d.enable_audio ? '已开启' : '已关闭'}</div>
         ${d.last_error ? `<div class="k">最近错误</div><div class="v" style="color:var(--err)">${esc(d.last_error.slice(0, 120))}</div>` : ''}
       </div>
-
       <div class="btn-group">
         <a class="btn small primary" href="/console?device=${d.id}" target="_blank" rel="noopener">控制台</a>
         ${d.status === 'running'
@@ -157,20 +222,42 @@
         ${d.recording ? '<button class="btn small" data-act="recstop">停止录屏</button>'
                       : '<button class="btn small" data-act="recstart">录屏</button>'}
         <button class="btn small danger" data-act="delete">删除</button>
-      </div>
-    </div>`;
+      </div>`;
+  }
+
+  // ── 预览图：先解码再换图，避免闪白 ──────────────────────────────────
+  const THUMB_MIN_GAP = 20000;
+  function refreshThumbs(force = false) {
+    if (document.hidden) return;
+    S.devices.forEach((d) => {
+      if (!d.screen_ready) return;
+      const last = S.thumbAt[d.id] || 0;
+      if (!force && Date.now() - last < THUMB_MIN_GAP) return;
+      S.thumbAt[d.id] = Date.now();
+      loadThumb(d.id);
+    });
   }
 
   async function loadThumb(id) {
     try {
       const res = await fetch(`/api/devices/${id}/screenshot?t=${Date.now()}`);
       if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
       const img = $(`#thumb-${id}`);
-      const ph = $(`#thumb-ph-${id}`);
-      if (!img) return;
-      img.src = URL.createObjectURL(await res.blob());
-      img.hidden = false;
-      if (ph) ph.hidden = true;
+      if (!img) { URL.revokeObjectURL(url); return; }
+      // 直接改 src 会先变空再显示，肉眼就是闪一下。
+      // 先在离屏对象里解好，成功了才换上去，并回收上一张的 blob。
+      const probe = new Image();
+      probe.onload = () => {
+        const old = img.src;
+        img.src = url;
+        img.hidden = false;
+        const ph = $(`#thumb-ph-${id}`);
+        if (ph) { ph.hidden = true; ph.textContent = ''; }
+        if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
+      };
+      probe.onerror = () => URL.revokeObjectURL(url);
+      probe.src = url;
     } catch (_) { /* 预览失败不影响其它功能 */ }
   }
 
@@ -252,7 +339,7 @@
     updateBadges();
 
     const cur = $('#storeDevice').value;
-    $('#storeDevice').innerHTML = deviceOptions(cur);
+    setOptions($('#storeDevice'), deviceOptions(cur));
     const target = $('#storeDevice').value;
 
     // 已装应用（拿第一台运行中的设备做参考）
@@ -263,7 +350,7 @@
     const installedPkgs = new Set(installed.map((a) => a.package));
 
     const initial = (name) => (name || '?').trim().charAt(0).toUpperCase();
-    $('#storeGrid').innerHTML = cat.items.map((a) => {
+    setHTML($('#storeGrid'), cat.items.map((a) => {
       const done = a.package && installedPkgs.has(a.package);
       return `
       <div class="app-card" data-key="${esc(a.key)}" data-pkg="${esc(a.package || '')}">
@@ -283,12 +370,12 @@
           ${!a.installable ? '<button class="btn small" data-act="why">怎么装</button>' : ''}
         </div>
       </div>`;
-    }).join('');
+    }).join(''));
 
     $('#installedHint').textContent = target
       ? `云手机「${(runningDevices().find((d) => String(d.id) === target) || {}).name || ''}」上的第三方应用`
       : '先开机一台云手机';
-    $('#installedGrid').innerHTML = installed.length ? installed.map((a) => `
+    setHTML($('#installedGrid'), installed.length ? installed.map((a) => `
       <div class="app-card" data-pkg="${esc(a.package)}">
         <div class="app-top">
           <div class="app-icon">${esc((a.name || a.package).charAt(0).toUpperCase())}</div>
@@ -303,7 +390,7 @@
           <button class="btn small danger" data-act="uninstall">卸载</button>
         </div>
       </div>`).join('')
-      : empty('⊞', '这台云手机还没装第三方应用', '在上面的应用市场里点「安装」，或上传自己的 apk。');
+      : empty('⊞', '这台云手机还没装第三方应用', '在上面的应用市场里点「安装」，或上传自己的 apk。'));
 
     local.items.length && ($('#installedHint').textContent += ` · 已上传 ${local.items.length} 个安装包`);
     renderStoreJob(target);
@@ -450,9 +537,9 @@
     box.hidden = false;
     $('#storeJobBar').style.width = `${job.percent || 0}%`;
     const label = { downloading: '下载', installing: '安装', done: '完成', failed: '失败' }[job.state] || job.state;
-    $('#storeJobMsg').innerHTML = job.state === 'failed'
+    setHTML($('#storeJobMsg'), job.state === 'failed'
       ? `<span style="color:var(--err)">${esc(job.error || '失败')}</span>`
-      : `${esc(job.name)} · ${label} · ${esc(String(job.message || '').slice(0, 60))}`;
+      : `${esc(job.name)} · ${label} · ${esc(String(job.message || '').slice(0, 60))}`);
   }
 
   function pollStoreJob(deviceId) {
@@ -478,9 +565,9 @@
 
     const opts = '<option value="">自动挑一台</option>'
       + devices.map((d) => `<option value="${d.id}">${esc(d.name)}（${d.status}）</option>`).join('');
-    if ($('#taskDeviceSelect').innerHTML !== opts) $('#taskDeviceSelect').innerHTML = opts;
+    setOptions($('#taskDeviceSelect'), opts);
 
-    $('#taskTable tbody').innerHTML = tasks.length ? tasks.map((t) => `
+    setHTML($('#taskTable tbody'), tasks.length ? tasks.map((t) => `
       <tr data-id="${t.id}">
         <td>${esc(t.name)}<span class="cell-sub">#${t.id}</span></td>
         <td>${t.platform === 'douyin' ? '抖音' : '小红书'}</td>
@@ -499,7 +586,7 @@
           <button class="btn small danger" data-act="del">删除</button>
         </div></td>
       </tr>`).join('')
-      : `<tr><td colspan="9">${empty('◷', '还没有监控任务', '填直播间标识就能开始定时采集直播间信息与商品。')}</td></tr>`;
+      : `<tr><td colspan="9">${empty('◷', '还没有监控任务', '填直播间标识就能开始定时采集直播间信息与商品。')}</td></tr>`);
   }
 
   $('#taskTable').addEventListener('click', async (e) => {
@@ -562,11 +649,11 @@
     S.tasks = tasks;
     const sel = $('#dataTaskSelect');
     const opts = tasks.map((t) => `<option value="${t.id}">#${t.id} ${esc(t.name)}</option>`).join('');
-    if (sel.innerHTML !== opts) sel.innerHTML = opts;
+    setOptions(sel, opts);
     if (S.dataTaskId) sel.value = String(S.dataTaskId);
     S.dataTaskId = Number(sel.value || tasks[0]?.id || 0);
     if (!S.dataTaskId) {
-      $('#snapshotTable tbody').innerHTML = `<tr><td colspan="8">${empty('▦', '还没有采集数据', '先建一个监控任务。')}</td></tr>`;
+      setHTML($('#snapshotTable tbody'), `<tr><td colspan="8">${empty('▦', '还没有采集数据', '先建一个监控任务。')}</td></tr>`);
       return;
     }
 
@@ -576,7 +663,7 @@
       api(`/api/products/keys?task_id=${S.dataTaskId}`),
     ]);
 
-    $('#snapshotTable tbody').innerHTML = snaps.items.length ? snaps.items.map((s) => `
+    setHTML($('#snapshotTable tbody'), snaps.items.length ? snaps.items.map((s) => `
       <tr>
         <td><span class="cell-sub">${fmtTime(s.captured_at)}</span></td>
         <td><span class="badge ${s.is_live ? 'ok' : 'error'}">${s.is_live ? '直播中' : '未直播'}</span></td>
@@ -586,9 +673,9 @@
         <td>${fmtNum(s.like_count)}</td>
         <td>${s.product_count}</td>
         <td>${s.screenshot_path ? `<a class="btn small" href="/api/media?path=${encodeURIComponent(relPath(s.screenshot_path))}" target="_blank" rel="noopener">查看</a>` : '-'}</td>
-      </tr>`).join('') : '<tr><td colspan="8">暂无快照</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="8">暂无快照</td></tr>');
 
-    $('#productTable tbody').innerHTML = latest.items.length ? latest.items.map((p) => `
+    setHTML($('#productTable tbody'), latest.items.length ? latest.items.map((p) => `
       <tr>
         <td>${p.position ?? '-'}</td>
         <td class="wrap">${esc(p.title || '-')}</td>
@@ -596,23 +683,23 @@
         <td>${p.origin_price ?? '-'}</td>
         <td>${esc(p.sales_text || '-')}</td>
         <td>${esc(p.stock_text || '-')}</td>
-      </tr>`).join('') : '<tr><td colspan="6">最近一次没采到商品</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="6">最近一次没采到商品</td></tr>');
 
     const keySel = $('#productKeySelect');
     const keyOpts = keys.items.map((k) => `<option value="${esc(k.product_key)}">${esc((k.title || k.product_key).slice(0, 40))}（${k.samples}次）</option>`).join('');
-    if (keySel.innerHTML !== keyOpts) keySel.innerHTML = keyOpts;
+    setOptions(keySel, keyOpts);
     if (keys.items.length) await loadSeries(keySel.value || keys.items[0].product_key);
-    else { $('#seriesChart').innerHTML = ''; $('#seriesTable tbody').innerHTML = ''; }
+    else { setHTML($('#seriesChart'), ''); setHTML($('#seriesTable tbody'), ''); }
   }
 
   async function loadSeries(key) {
     if (!key || !S.dataTaskId) return;
     const s = await api(`/api/products/series?task_id=${S.dataTaskId}&product_key=${encodeURIComponent(key)}`);
-    $('#seriesTable tbody').innerHTML = s.points.slice(-40).reverse().map((p) => `
+    setHTML($('#seriesTable tbody'), s.points.slice(-40).reverse().map((p) => `
       <tr><td><span class="cell-sub">${fmtTime(p.captured_at)}</span></td><td>${p.price ?? '-'}</td>
       <td>${p.position ?? '-'}</td><td>${esc(p.sales_text || '-')}</td></tr>`).join('')
-      || '<tr><td colspan="4">暂无数据</td></tr>';
-    $('#seriesChart').innerHTML = sparkline(s.points.map((p) => p.price).filter((v) => v != null));
+      || '<tr><td colspan="4">暂无数据</td></tr>');
+    setHTML($('#seriesChart'), sparkline(s.points.map((p) => p.price).filter((v) => v != null)));
   }
 
   function sparkline(values) {
@@ -638,7 +725,7 @@
   // ── 录像 ────────────────────────────────────────────────────────────
   async function loadRecords() {
     const r = await api('/api/recordings?limit=100');
-    $('#recordingTable tbody').innerHTML = r.items.length ? r.items.map((x) => `
+    setHTML($('#recordingTable tbody'), r.items.length ? r.items.map((x) => `
       <tr data-id="${x.id}">
         <td>${x.id}</td>
         <td>${x.task_id ? '任务 ' + x.task_id : '手动'}<span class="cell-sub">云手机 ${x.device_id ?? '-'}</span></td>
@@ -653,7 +740,7 @@
           <button class="btn small danger" data-act="del">删除</button>
         </div></td>
       </tr>`).join('')
-      : `<tr><td colspan="7">${empty('▶', '还没有录像', '在云手机卡片或控制台里点「录屏」，结束后可在这里在线回放。')}</td></tr>`;
+      : `<tr><td colspan="7">${empty('▶', '还没有录像', '在云手机卡片或控制台里点「录屏」，结束后可在这里在线回放。')}</td></tr>`);
   }
 
   $('#recordingTable').addEventListener('click', async (e) => {
@@ -686,7 +773,7 @@
     S.channels = plans.channels.filter((c) => c.ready);
 
     const ents = summary.active_entitlements || [];
-    $('#quotaInfo').innerHTML = [
+    setHTML($('#quotaInfo'), [
       ['计费模式', summary.billing_enabled
         ? (summary.enforce ? '<span class="badge starting">按套餐计费</span>' : '<span class="badge ok">试用中</span> <span class="sub">未强制付费</span>')
         : '<span class="badge">未启用</span>'],
@@ -694,9 +781,9 @@
       ['生效套餐', ents.length
         ? ents.map((e) => `${esc(e.plan_name)}　<span class="sub">剩 ${e.days_left ?? '-'} 天 · 已用 ${e.used_devices}/${e.max_devices} 台</span>`).join('<br>')
         : '<span class="sub">还没有已购套餐</span>'],
-    ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
+    ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join(''));
 
-    $('#planGrid').innerHTML = plans.items.map((p) => {
+    setHTML($('#planGrid'), plans.items.map((p) => {
       const s = p.spec;
       const li = (on, text) => `<li class="${on ? '' : 'off'}">${esc(text)}</li>`;
       return `
@@ -720,9 +807,9 @@
           <button class="btn primary block" data-act="buy">立即开通</button>
         </div>
       </div>`;
-    }).join('') || `<div class="card">${empty('◈', '还没有上架套餐', '请管理员在后台「定价」里配置。')}</div>`;
+    }).join('') || `<div class="card">${empty('◈', '还没有上架套餐', '请管理员在后台「定价」里配置。')}</div>`);
 
-    $('#orderTable tbody').innerHTML = orders.items.length ? orders.items.map((o) => `
+    setHTML($('#orderTable tbody'), orders.items.length ? orders.items.map((o) => `
       <tr data-no="${esc(o.order_no)}">
         <td><span class="cell-sub">${esc(o.order_no)}</span></td>
         <td>${esc(o.plan_name || '-')}</td>
@@ -733,7 +820,7 @@
         <td><div class="row-actions">
           ${o.status === 'pending' ? '<button class="btn small primary" data-act="pay">继续支付</button><button class="btn small danger" data-act="cancel">取消</button>' : ''}
         </div></td>
-      </tr>`).join('') : '<tr><td colspan="7">还没有订单</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="7">还没有订单</td></tr>');
   }
 
   function showPay(order) {

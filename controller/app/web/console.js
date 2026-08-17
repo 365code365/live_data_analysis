@@ -3,7 +3,7 @@
   'use strict';
 
   // 主题、请求、提示、弹窗都用 common.js 里的公共实现，三个页面保持一致
-  const { $, esc, api, toast, modal, bindModal, mountThemePicker } = window.LDM;
+  const { $, esc, api, toast, modal, bindModal, mountThemePicker, setHTML } = window.LDM;
 
   const deviceId = Number(new URLSearchParams(location.search).get('device') || 0);
   const state = {
@@ -90,7 +90,7 @@
       ['声音', d.enable_audio ? `已开启（端口 ${d.audio_port || '-'}）` : '已关闭'],
     ].map(([k, v]) => `<div class="k">${k}</div><div class="v">${v}</div>`).join('');
     // 内容没变就不重写 DOM，避免无谓的重排
-    if ($('#devStatus').innerHTML !== statusHtml) $('#devStatus').innerHTML = statusHtml;
+    setHTML($('#devStatus'), statusHtml);
 
     $('#btnRecord').textContent = d.recording ? '停止录屏' : '开始录屏';
     state.recording = !!d.recording;
@@ -543,7 +543,14 @@
     } catch (err) {
       mask('加载失败', err.message);
     }
-    state.timer = setInterval(() => loadDevice().catch(() => {}), 15000);
+    // 标签页在后台时不轮询：既省资源，也避免切回来时一堆状态同时刷新导致画面抖一下
+    state.timer = setInterval(() => {
+      if (document.hidden) return;
+      loadDevice().catch(() => {});
+    }, 15000);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) loadDevice().catch(() => {});
+    });
   }
 
   boot();
