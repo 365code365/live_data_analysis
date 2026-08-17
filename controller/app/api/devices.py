@@ -8,6 +8,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile
 from sqlmodel import Session, select
 
+from .. import catalogs
 from ..config import settings
 from ..core import apps, collector, device_service, events, host
 from ..core.android import get_device
@@ -73,6 +74,12 @@ def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, 
         "proxy_url_masked": proxy.url(mask=True) if proxy else None,
         "memory_mb": device.memory_mb,
         "cpu_limit": device.cpu_limit,
+        "disk_gb": device.disk_gb,
+        "disk_quota": device.disk_quota,
+        "perf_code": device.perf_code,
+        "perf_name": catalogs.perf_name(device.perf_code),
+        "screen_code": device.screen_code,
+        "screen_name": catalogs.screen_name(device.screen_code),
         "entitlement_id": device.entitlement_id,
         "adb_port": device.adb_port,
         "novnc_port": device.novnc_port,

@@ -64,10 +64,15 @@ class ProxyProbe(BaseModel):
 # ── 设备 ──────────────────────────────────────────────────────────────────
 class DeviceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
+    # 档位（推荐用法）：性能 / 屏幕 / 磁盘 都是 GET /api/specs 里给出的固定选项
+    perf: Optional[str] = Field(default=None, description="性能档位 code，如 standard")
+    screen: Optional[str] = Field(default=None, description="屏幕档位 code，如 hd_p")
+    disk_gb: Optional[int] = Field(default=None, description="磁盘容量 GB，需为档位里的值")
+    # 也允许直接给具体参数（给 API 调用方留的口子），优先级高于档位
     width: Optional[int] = Field(default=None, ge=320, le=2160)
     height: Optional[int] = Field(default=None, ge=480, le=3840)
     dpi: Optional[int] = Field(default=None, ge=120, le=640)
-    proxy_id: Optional[int] = None
+    proxy_id: Optional[int] = Field(default=None, description="出口 IP（代理）id，见 /api/specs.regions")
     android_image: Optional[str] = None
     vnc_password: Optional[str] = None
     enable_audio: bool = True

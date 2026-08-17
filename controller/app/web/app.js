@@ -118,16 +118,11 @@
     S.plans = plans.items || [];
     updateBadges();
 
-    // 套餐下拉：只列还有名额的权益
-    const idByCode = Object.fromEntries(S.plans.map((p) => [p.code, p.id]));
     const usable = (quota?.active_entitlements || []).filter((e) => e.remaining_devices > 0);
-    // setOptions：选项没变就不重写，否则用户选好的套餐会被轮询打回默认值
-    setOptions($('#devicePlanSelect'),
-      (quota?.enforce ? '' : '<option value="">不绑定（试用）</option>')
-      + usable.map((e) => `<option value="${idByCode[e.plan_code] || ''}">${esc(e.plan_name)}（剩 ${e.remaining_devices} 台）</option>`).join(''));
     const hint = quota && quota.enforce && !usable.length
-      ? '当前为强制付费模式，且没有可用名额，请先购买套餐。'
-      : '选了套餐时，分辨率与内存按套餐规格生效；不绑定则按下面填的参数创建。';
+      ? '当前为强制付费模式且没有可用名额，请先购买套餐。'
+      : `共 ${devices.length} 台 · 运行中 ${devices.filter((d) => d.status === 'running').length} 台`
+        + (quota && quota.device_quota ? ` · 套餐额度 ${quota.device_used}/${quota.device_quota}` : '');
     if ($('#deviceFormHint').textContent !== hint) $('#deviceFormHint').textContent = hint;
 
     renderDevices(devices);
@@ -207,9 +202,16 @@
   function deviceBody(d) {
     return `
       <div class="kv">
-        <div class="k">规格</div><div class="v">${d.width}×${d.height} @${d.dpi}dpi ·
-          ${d.memory_mb ? d.memory_mb + 'MB' : '内存不限'} · ${d.cpu_limit ? d.cpu_limit + ' 核' : 'CPU 不限'}</div>
-        <div class="k">出口 IP</div><div class="v">${esc(d.egress_ip || '未检测')}</div>
+        <div class="k">配置</div><div class="v">${[
+          d.perf_name || (d.memory_mb ? `${(d.memory_mb / 1024).toFixed(0)}GB 内存` : '内存不限'),
+          d.cpu_limit ? `${d.cpu_limit} 核` : 'CPU 不限',
+          d.memory_mb && d.perf_name ? `${(d.memory_mb / 1024).toFixed(0)}GB 内存` : '',
+          d.disk_gb ? `${d.disk_gb}GB 磁盘${d.disk_quota ? '' : '（未限额）'}` : '',
+        ].filter(Boolean).map(esc).join(' · ')}</div>
+        <div class="k">屏幕</div><div class="v">${d.width}×${d.height} @${d.dpi}dpi
+          ${d.width > d.height ? '<span class="app-tag">横屏</span>' : ''}</div>
+        <div class="k">出口 IP</div><div class="v">${esc(d.egress_ip || '未检测')}${
+          d.proxy_name ? ` <span class="app-tag">${esc(d.proxy_name)}</span>` : ''}</div>
         <div class="k">声音</div><div class="v">${d.enable_audio ? '已开启' : '已关闭'}</div>
         ${d.last_error ? `<div class="k">最近错误</div><div class="v" style="color:var(--err)">${esc(d.last_error.slice(0, 120))}</div>` : ''}
       </div>
@@ -289,37 +291,222 @@
     finally { if (btn) btn.disabled = false; }
   });
 
-  // 方向只是宽高的快捷方式：安卓实例的屏幕方向在开机时定死，之后转不了
-  const ORIENT_SIZE = { portrait: [720, 1280], landscape: [1280, 720] };
-  $('#deviceOrient').addEventListener('change', (e) => {
-    const [w, h] = ORIENT_SIZE[e.target.value] || ORIENT_SIZE.portrait;
-    $('#deviceForm [name="width"]').value = w;
-    $('#deviceForm [name="height"]').value = h;
-  });
+  // ── 新建云手机：弹窗里选档位，不让用户填裸数字 ──────────────────────
+  // 内存/CPU 填错会直接 OOM，分辨率填奇怪的值 redroid 起不来，
+  // 所以性能、屏幕、磁盘、出口 IP 全部做成固定选项（服务端 /api/specs 给）。
+  $('#newDeviceBtn').addEventListener('click', () => openCreateDialog());
 
-  $('#deviceForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
+  async function openCreateDialog() {
+    let specs;
     try {
-      await api('/api/devices', {
-        method: 'POST',
-        body: {
-          name: f.get('name'),
-          plan_id: f.get('plan_id') ? Number(f.get('plan_id')) : null,
-          // 选「横屏」时上面的 change 已经把 1280/720 填进宽高输入框了；
-          // 留空就交给服务端用 DEVICE_WIDTH/HEIGHT 默认值
-          width: f.get('width') ? Number(f.get('width')) : null,
-          height: f.get('height') ? Number(f.get('height')) : null,
-          dpi: f.get('dpi') ? Number(f.get('dpi')) : null,
-          enable_audio: f.get('enable_audio') === 'on',
-          autostart: f.get('autostart') === 'on',
-        },
-      });
-      e.target.reset();
-      toast('已创建，正在开机', 'ok');
-      await loadDevices();
-    } catch (err) { toast(err.message, 'err'); }
-  });
+      specs = await api('/api/specs');
+    } catch (err) { toast(`读取可选规格失败: ${err.message}`, 'err'); return; }
+
+    const pick = {
+      perf: specs.defaults.perf,
+      screen: specs.defaults.screen,
+      disk: (specs.performance.find((p) => p.code === specs.defaults.perf) || {}).disk_gb || 0,
+      region: '',
+      plan: '',
+    };
+    const usable = (specs.quota?.active_entitlements || []).filter((e) => e.remaining_devices > 0);
+    const planByCode = Object.fromEntries(specs.plans.map((p) => [p.code, p]));
+    const enforce = !!specs.quota?.enforce;
+
+    const card = (on, badge, name, spec, note) => `
+      <div class="pick${on ? ' active' : ''}">
+        ${badge ? `<span class="pick-badge">${esc(badge)}</span>` : ''}
+        <div class="pick-name">${esc(name)}</div>
+        <div class="pick-spec">${esc(spec)}</div>
+        ${note ? `<div class="pick-note">${esc(note)}</div>` : ''}
+      </div>`;
+
+    const body = () => {
+      const plan = pick.plan ? planByCode[pick.plan] : null;
+      const locked = !!plan; // 选了套餐就按套餐规格开，性能/屏幕不让改
+      return `
+      <div class="form-block">
+        <div class="label">名称</div>
+        <input id="cdName" placeholder="douyin-01" maxlength="80" style="width:100%" />
+      </div>
+
+      ${specs.plans.length ? `
+      <div class="form-block">
+        <div class="label">套餐 ${enforce ? '<span class="badge starting">必选</span>' : '<span class="sub">可不选，试用模式按下面的档位开</span>'}</div>
+        <select id="cdPlan" style="width:100%">
+          ${enforce ? '' : '<option value="">不绑定套餐（试用）</option>'}
+          ${usable.map((e) => `<option value="${esc(e.plan_code)}" ${pick.plan === e.plan_code ? 'selected' : ''}>${esc(e.plan_name)}（剩 ${e.remaining_devices} 台）</option>`).join('')}
+        </select>
+        ${enforce && !usable.length ? '<div class="pick-note" style="color:var(--err)">没有可用名额，请先去「套餐与账单」购买。</div>' : ''}
+        ${locked ? `<div class="pick-note">已按套餐「${esc(plan.name)}」的规格开机，下面的性能与屏幕以套餐为准。</div>` : ''}
+      </div>` : ''}
+
+      <div class="form-block">
+        <div class="label">性能 <span class="sub">内存与 CPU 是硬限制，直接作用在容器上</span></div>
+        <div class="pick-grid ${locked ? 'locked' : ''}" id="cdPerf">
+          ${specs.performance.map((p) => `
+            <div data-code="${esc(p.code)}">${card(
+              !locked && pick.perf === p.code, p.badge, p.name,
+              `${p.memory_mb / 1024}GB 内存 · ${p.cpu_limit} 核 · ${p.disk_gb}GB 磁盘`, p.note,
+            )}</div>`).join('')}
+        </div>
+      </div>
+
+      <div class="form-block">
+        <div class="label">屏幕 <span class="sub">方向在开机时定死，建好之后不能转屏</span></div>
+        <div class="pick-grid ${locked ? 'locked' : ''}" id="cdScreen">
+          ${specs.screens.map((s) => `
+            <div data-code="${esc(s.code)}">${card(
+              !locked && pick.screen === s.code, s.badge, s.name,
+              `${s.width}×${s.height} @${s.dpi}dpi · ${s.orientation === 'landscape' ? '横屏' : '竖屏'}`, s.note,
+            )}</div>`).join('')}
+        </div>
+      </div>
+
+      <div class="form-row" style="gap:16px">
+        <label style="min-width:170px">磁盘（安卓 /data）
+          <select id="cdDisk">
+            ${specs.disks.map((g) => `<option value="${g}" ${Number(pick.disk) === g ? 'selected' : ''}>${g} GB</option>`).join('')}
+          </select>
+        </label>
+        <label class="grow">出口 IP 区域
+          <select id="cdRegion">
+            <option value="">直连（不走代理）</option>
+            ${specs.regions.map((r) => `<option value="${r.id}" ${String(pick.region) === String(r.id) ? 'selected' : ''}>${
+              esc(r.name)}${r.region ? ` · ${esc(r.region)}` : ''}${r.ip_masked ? ` · ${esc(r.ip_masked)}` : ''}${
+              r.verified ? '' : '（未验证）'}${r.in_use ? ` · 已有 ${r.in_use} 台在用` : ''}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+      ${specs.regions.length ? '' : '<p class="hint">还没有可用的出口 IP。需要独立 IP 请让管理员在后台「代理池」里添加。</p>'}
+      ${specs.disk_quota_supported ? '' : '<p class="hint">当前宿主文件系统没开 project quota，磁盘容量只作规格登记，不是硬限制。</p>'}
+
+      <div class="form-row" style="margin-top:14px;gap:18px">
+        <label class="switch"><input type="checkbox" id="cdAudio" checked /> 开启声音转发</label>
+        <label class="switch"><input type="checkbox" id="cdAutostart" checked /> 创建后立即开机</label>
+      </div>
+
+      <div class="summary" style="margin-top:14px">
+        将创建：<strong id="cdSummary">${esc(summaryText())}</strong>
+      </div>
+
+      <div class="btn-group" style="margin-top:16px">
+        <button class="btn primary" id="cdSubmit">创建并开机</button>
+        <button class="btn ghost" id="cdCancel">取消</button>
+        <span class="sub" id="cdStatus"></span>
+      </div>`;
+    };
+
+    // 选档位只改高亮和摘要，不整体重绘弹窗：重绘会丢焦点、把滚动条弹回顶部，
+    // 那就是另一种抖动了。只有「选套餐」需要重绘（它会锁住性能与屏幕）。
+    const summaryText = () => {
+      const plan = pick.plan ? planByCode[pick.plan] : null;
+      const tier = specs.performance.find((p) => p.code === pick.perf);
+      const scr = specs.screens.find((s) => s.code === pick.screen);
+      const s = plan ? plan.spec : {
+        memory_mb: tier?.memory_mb, cpu_limit: tier?.cpu_limit,
+        width: scr?.width, height: scr?.height, dpi: scr?.dpi,
+      };
+      const region = specs.regions.find((r) => String(r.id) === String(pick.region));
+      return [
+        `${s.width}×${s.height} @${s.dpi}dpi`,
+        s.memory_mb ? `${s.memory_mb / 1024}GB 内存` : '内存不限',
+        s.cpu_limit ? `${s.cpu_limit} 核` : 'CPU 不限',
+        pick.disk ? `${pick.disk}GB 磁盘` : '磁盘不限',
+        region ? `出口 ${region.region || region.name}` : '直连出网',
+      ].join(' · ');
+    };
+    const updateSummary = () => {
+      const el = $('#cdSummary');
+      if (el) el.textContent = summaryText();
+    };
+
+    const render = () => {
+      const keep = $('#modalBody') ? $('#modalBody').scrollTop : 0;
+      modal('新建云手机', body(), { wide: true });
+      const name = $('#cdName');
+      if (name) name.value = S.newName || '';
+      $('#modalBody').scrollTop = keep;
+      bind();
+    };
+
+    const bind = () => {
+      const nameEl = $('#cdName');
+      if (nameEl) nameEl.addEventListener('input', (e) => { S.newName = e.target.value; });
+
+      const planSel = $('#cdPlan');
+      if (planSel) planSel.addEventListener('change', (e) => { pick.plan = e.target.value; render(); });
+
+      const onPick = (id, key) => {
+        const box = $(id);
+        if (!box || box.classList.contains('locked')) return;
+        box.addEventListener('click', (e) => {
+          const item = e.target.closest('[data-code]');
+          if (!item) return;
+          pick[key] = item.dataset.code;
+          box.querySelectorAll('.pick').forEach((p) => p.classList.remove('active'));
+          item.querySelector('.pick').classList.add('active');
+          // 换性能档位时磁盘跟着推荐值走（用户之后还能自己改）
+          if (key === 'perf') {
+            const t = specs.performance.find((p) => p.code === pick.perf);
+            if (t) {
+              pick.disk = t.disk_gb;
+              const disk = $('#cdDisk');
+              if (disk) disk.value = String(t.disk_gb);
+            }
+          }
+          updateSummary();
+        });
+      };
+      onPick('#cdPerf', 'perf');
+      onPick('#cdScreen', 'screen');
+
+      const disk = $('#cdDisk');
+      if (disk) disk.addEventListener('change', (e) => { pick.disk = Number(e.target.value); updateSummary(); });
+      const region = $('#cdRegion');
+      if (region) region.addEventListener('change', (e) => { pick.region = e.target.value; updateSummary(); });
+
+      $('#cdCancel').addEventListener('click', () => { S.newName = ''; closeModal(); });
+      $('#cdSubmit').addEventListener('click', submit);
+    };
+
+    const submit = async () => {
+      const name = ($('#cdName').value || '').trim();
+      if (!name) { toast('先给它起个名字', 'err'); $('#cdName').focus(); return; }
+      const plan = pick.plan ? planByCode[pick.plan] : null;
+      const btn = $('#cdSubmit');
+      btn.disabled = true;
+      $('#cdStatus').textContent = $('#cdAutostart').checked
+        ? '正在创建容器并开机，约 20-40 秒…' : '正在创建…';
+      try {
+        await api('/api/devices', {
+          method: 'POST',
+          body: {
+            name,
+            plan_id: plan ? plan.id : null,
+            // 选了套餐时规格以套餐为准，这里就不再传档位，避免两边打架
+            perf: plan ? null : pick.perf,
+            screen: plan ? null : pick.screen,
+            disk_gb: Number(pick.disk) || null,
+            proxy_id: pick.region ? Number(pick.region) : null,
+            enable_audio: $('#cdAudio').checked,
+            autostart: $('#cdAutostart').checked,
+          },
+        });
+        S.newName = '';
+        closeModal();
+        toast('云手机已创建，安卓开机约 1-2 分钟', 'ok');
+        await loadDevices();
+      } catch (err) {
+        btn.disabled = false;
+        $('#cdStatus').textContent = '';
+        modal('创建失败', `<div class="alert" style="margin:0"><div class="alert-body">${esc(err.message)}</div></div>`);
+      }
+    };
+
+    if (enforce && usable.length) pick.plan = usable[0].plan_code;
+    render();
+  }
 
   // ── 应用市场 ────────────────────────────────────────────────────────
   const runningDevices = () => S.devices.filter((d) => d.status === 'running');

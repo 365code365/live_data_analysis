@@ -89,6 +89,13 @@ class Device(SQLModel, table=True):
     # 0 表示不限制；由套餐规格决定，这是「不同配置不同价格」的落地点
     memory_mb: int = 0
     cpu_limit: float = 0
+    # 安卓 /data 卷容量（GB）。0 = 不设上限。
+    disk_gb: int = 0
+    # 宿主文件系统支持配额时才是硬限制，否则只是记录（见 docker_manager._ensure_volume）
+    disk_quota: bool = Field(default=False)
+    # 创建时选的档位，用来在界面上显示「标准型 · 高清竖屏」而不是一堆数字
+    perf_code: Optional[str] = None
+    screen_code: Optional[str] = None
     android_image: Optional[str] = None
 
     proxy_id: Optional[int] = Field(default=None, foreign_key="proxy_profile.id", index=True)

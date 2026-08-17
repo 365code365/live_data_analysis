@@ -39,6 +39,7 @@ class DockerManager:
     """
 
     def __init__(self) -> None:
+        self._quota_supported: Optional[bool] = None
         try:
             self.client = docker.from_env()
             self.client.ping()
@@ -120,7 +121,8 @@ class DockerManager:
         enable_audio: bool = True,
         memory_mb: int = 0,
         cpu_limit: float = 0,
-    ) -> dict[str, str]:
+        disk_gb: int = 0,
+    ) -> dict[str, Any]:
         self.ensure_network()
         n = self.names(device_id)
         image = android_image or settings.redroid_image
@@ -129,7 +131,7 @@ class DockerManager:
         for name in (n.vnc, n.android, n.gw):
             self._remove_if_exists(name)
 
-        self._ensure_volume(n.volume, device_id)
+        quota_ok = self._ensure_volume(n.volume, device_id, disk_gb=disk_gb)
 
         gw = self._start_gateway(device_id, n, adb_port, novnc_port, audio_port, proxy_url)
         try:
@@ -148,14 +150,60 @@ class DockerManager:
             "android": android.name,
             "vnc": vnc.name,
             "volume": n.volume,
+            "disk_quota": quota_ok,
         }
 
-    def _ensure_volume(self, name: str, device_id: int) -> None:
+    def _ensure_volume(self, name: str, device_id: int, *, disk_gb: int = 0) -> bool:
+        """确保安卓 /data 卷存在。返回是否真的加上了磁盘配额。
+
+        docker 的 local 卷驱动只有在宿主文件系统开了 project quota（xfs prjquota，
+        或 ext4 + prjquota）时才支持 size 限额，否则 create 会直接报
+        "quota size requested but no quota support"。这里尝试带配额创建，
+        失败就退回普通卷并把结果如实报上去 —— 界面上会写「未限额」，不假装。
+        """
         try:
             self.client.volumes.get(name)
+            return False  # 已存在的卷不改动，配额情况以创建时为准
         except NotFound:
-            log.info("创建安卓数据卷 %s", name)
-            self.client.volumes.create(name=name, labels=self._labels(device_id, "data"))
+            pass
+
+        labels = self._labels(device_id, "data")
+        if disk_gb and disk_gb > 0:
+            try:
+                self.client.volumes.create(
+                    name=name,
+                    labels=labels,
+                    driver_opts={"size": f"{int(disk_gb)}g"},
+                )
+                log.info("创建安卓数据卷 %s（配额 %sGB）", name, disk_gb)
+                return True
+            except APIError as exc:
+                log.warning("卷 %s 加磁盘配额失败（%s），退回不限额", name, str(exc).strip()[:120])
+
+        log.info("创建安卓数据卷 %s", name)
+        self.client.volumes.create(name=name, labels=labels)
+        return False
+
+    def disk_quota_supported(self) -> bool:
+        """探一次宿主是否支持卷磁盘配额，结果缓存（用于界面上如实标注）。"""
+        if self._quota_supported is None:
+            probe = f"{settings.container_prefix}_quota_probe"
+            self._remove_if_exists_volume(probe)
+            try:
+                self.client.volumes.create(name=probe, driver_opts={"size": "1g"})
+                self._quota_supported = True
+            except APIError as exc:
+                log.info("宿主不支持卷磁盘配额: %s", str(exc).strip()[:120])
+                self._quota_supported = False
+            finally:
+                self._remove_if_exists_volume(probe)
+        return self._quota_supported
+
+    def _remove_if_exists_volume(self, name: str) -> None:
+        try:
+            self.client.volumes.get(name).remove(force=True)
+        except (NotFound, APIError):
+            pass
 
     def _start_gateway(
         self,

@@ -8,6 +8,7 @@ from typing import Any, Optional
 
 from sqlmodel import Session, select
 
+from .. import catalogs
 from ..config import settings
 from ..models import Device, DeviceStatus, ProxyProfile, utcnow
 from . import billing, events
@@ -71,11 +72,29 @@ def create_device(
     vnc_password: Optional[str] = None,
     enable_audio: bool = True,
     plan_id: Optional[int] = None,
+    perf: Optional[str] = None,
+    screen: Optional[str] = None,
+    disk_gb: Optional[int] = None,
     autostart: bool = True,
 ) -> Device:
+    # ── 档位 → 具体参数 ───────────────────────────────────────────────
+    # 优先级：套餐规格 > 显式传的宽高 > 选中的档位 > 全局默认
+    memory_mb, cpu_limit = 0, 0.0
+    disk = catalogs.valid_disk(disk_gb)
+    tier = catalogs.performance(perf)
+    if tier:
+        memory_mb = int(tier["memory_mb"])
+        cpu_limit = float(tier["cpu_limit"])
+        if not disk:
+            disk = catalogs.valid_disk(tier["disk_gb"])
+    preset = catalogs.screen(screen)
+    if preset:
+        width = width or int(preset["width"])
+        height = height or int(preset["height"])
+        dpi = dpi or int(preset["dpi"])
+
     # ── 计费：按套餐规格开机并占用权益名额 ────────────────────────────
     entitlement_id: Optional[int] = None
-    memory_mb, cpu_limit = 0, 0.0
     if settings.billing_enabled and (plan_id or settings.billing_enforce):
         try:
             ent = billing.pick_entitlement(session, plan_id)
@@ -109,6 +128,9 @@ def create_device(
         entitlement_id=entitlement_id,
         memory_mb=memory_mb,
         cpu_limit=cpu_limit,
+        disk_gb=disk,
+        perf_code=perf if tier else None,
+        screen_code=screen if preset else None,
         vnc_password=vnc_password if vnc_password is not None else secrets.token_urlsafe(9),
         status=DeviceStatus.created,
     )
@@ -186,6 +208,7 @@ def start_device(session: Session, device: Device) -> Device:
             enable_audio=device.enable_audio,
             memory_mb=device.memory_mb,
             cpu_limit=device.cpu_limit,
+            disk_gb=device.disk_gb,
         )
     except Exception as exc:
         device.status = DeviceStatus.error
@@ -215,6 +238,9 @@ def start_device(session: Session, device: Device) -> Device:
     device.android_container = names["android"]
     device.vnc_container = names["vnc"]
     device.data_volume = names["volume"]
+    # 卷是第一次创建时才可能带上配额，这里如实记下来给界面显示
+    if names.get("disk_quota"):
+        device.disk_quota = True
     device.status = DeviceStatus.running
     device.booted_at = None
     device.updated_at = utcnow()

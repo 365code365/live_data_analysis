@@ -1,9 +1,10 @@
 from fastapi import APIRouter
 
-from . import apps, billing, data, devices, proxies, recordings, system, tasks
+from . import apps, billing, data, devices, proxies, recordings, specs, system, tasks
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(system.router)
+api_router.include_router(specs.router)
 api_router.include_router(proxies.router)
 api_router.include_router(devices.router)
 api_router.include_router(apps.router)
