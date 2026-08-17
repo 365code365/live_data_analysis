@@ -11,6 +11,7 @@
   const S = {
     view: 'home', timer: null, devices: [], tasks: [], catalog: [], plans: [],
     channels: [], dataTaskId: null, storeJobTimer: null, payPoll: null, quota: null,
+    fitFrame: null, // 画面弹窗当前用的尺寸换算函数（投屏页报回真实分辨率时要用）
   };
 
   bindModal();
@@ -201,6 +202,14 @@
     finally { if (btn) btn.disabled = false; }
   });
 
+  // 方向只是宽高的快捷方式：安卓实例的屏幕方向在开机时定死，之后转不了
+  const ORIENT_SIZE = { portrait: [720, 1280], landscape: [1280, 720] };
+  $('#deviceOrient').addEventListener('change', (e) => {
+    const [w, h] = ORIENT_SIZE[e.target.value] || ORIENT_SIZE.portrait;
+    $('#deviceForm [name="width"]').value = w;
+    $('#deviceForm [name="height"]').value = h;
+  });
+
   $('#deviceForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -210,6 +219,8 @@
         body: {
           name: f.get('name'),
           plan_id: f.get('plan_id') ? Number(f.get('plan_id')) : null,
+          // 选「横屏」时上面的 change 已经把 1280/720 填进宽高输入框了；
+          // 留空就交给服务端用 DEVICE_WIDTH/HEIGHT 默认值
           width: f.get('width') ? Number(f.get('width')) : null,
           height: f.get('height') ? Number(f.get('height')) : null,
           dpi: f.get('dpi') ? Number(f.get('dpi')) : null,
@@ -311,9 +322,14 @@
 
   function showScreenModal(dev, pkg) {
     if (!dev) return;
-    const scale = Math.min(1, (window.innerHeight * 0.62) / dev.height);
-    const w = Math.round(dev.width * scale);
-    const h = Math.round(dev.height * scale);
+    const fit = (fw, fh) => {
+      // 高度按视口给上限，宽度按弹窗可用宽度给上限，两边取小，且不放大
+      const maxH = window.innerHeight * 0.62;
+      const maxW = Math.min(window.innerWidth * 0.72, 1180);
+      const s = Math.min(maxH / fh, maxW / fw, 1);
+      return { w: Math.round(fw * s), h: Math.round(fh * s) };
+    };
+    const { w, h } = fit(dev.width, dev.height);
     const url = `http://${location.hostname}:${dev.novnc_port}/screen.html`
       + `?password=${encodeURIComponent(dev.vnc_password || '')}&scale=1&reconnect=1`;
     modal(`${dev.name}${pkg ? ' · ' + pkg : ''}`, `
@@ -335,7 +351,21 @@
       try { await api(`/api/devices/${dev.id}/key/${k.dataset.key}`, { method: 'POST' }); }
       catch (err) { toast(err.message, 'err'); }
     });
+
+    S.fitFrame = fit;
   }
+
+  // 投屏页会报上来 VNC 帧缓冲的真实尺寸；手机转横屏后弹窗里的画面跟着变形状，
+  // 否则横屏画面会被塞进竖着的 iframe 里，上下一大片黑。
+  window.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.source !== 'ldm-screen' || !d.width || !d.height || !S.fitFrame) return;
+    const frame = $('#modalBody .screen-modal-frame');
+    if (!frame) return;
+    const s = S.fitFrame(d.width, d.height);
+    frame.style.width = `${s.w}px`;
+    frame.style.height = `${s.h}px`;
+  });
 
   $('#storeGrid').addEventListener('click', async (e) => {
     const btn = e.target.closest('[data-act]');

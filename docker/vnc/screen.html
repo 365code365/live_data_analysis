@@ -35,11 +35,32 @@ const msgBox = document.getElementById('msg');
 // 每个页面实例一个 id：父页面据此区分「整页重载」和「就地重连」
 const instance = Math.random().toString(36).slice(2, 10);
 
+// 画面的真实尺寸就是 VNC 帧缓冲尺寸，也就是 noVNC 塞进来的 canvas 的像素尺寸。
+// 父页面要靠它算 iframe 的宽高：手机转横屏后帧缓冲会变成横的，
+// 光看数据库里存的分辨率会算错，画面就会被塞进一个竖框里留大黑边。
+function fbSize() {
+  const c = holder.querySelector('canvas');
+  return c && c.width && c.height ? { width: c.width, height: c.height } : null;
+}
+
 function notify(state, detail) {
   try {
-    parent.postMessage({ source: 'ldm-screen', state, detail: detail || '', instance }, '*');
+    const msg = { source: 'ldm-screen', state, detail: detail || '', instance };
+    Object.assign(msg, fbSize() || {});
+    parent.postMessage(msg, '*');
   } catch (_) { /* 跨域不可达时忽略 */ }
 }
+
+// noVNC 没有帧缓冲尺寸变化的事件，只能轮询 canvas。手机转屏时靠它把新形状告诉父页面。
+let lastFb = '';
+setInterval(() => {
+  const fb = fbSize();
+  if (!fb || !connected) return;
+  const key = `${fb.width}x${fb.height}`;
+  if (key === lastFb) return;
+  lastFb = key;
+  notify('resized');
+}, 600);
 function showMsg(text) { msgBox.textContent = text; msgBox.classList.add('show'); }
 function hideMsg() { msgBox.classList.remove('show'); }
 
@@ -70,6 +91,8 @@ function bindEvents() {
     connected = true;
     retry = 0;
     hideMsg();
+    const fb = fbSize();
+    lastFb = fb ? `${fb.width}x${fb.height}` : '';
     notify('connected');
     try { rfb.focus(); } catch (_) {}
   });

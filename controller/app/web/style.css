@@ -78,7 +78,8 @@ code, pre, .mono { font-family: var(--mono); }
 .page-title { font-size: 15px; font-weight: 600; margin: 0; }
 .page-sub { font-size: 12px; color: var(--muted); }
 .topbar .spacer { flex: 1; }
-.content { padding: 18px; max-width: 1560px; width: 100%; }
+/* 不设 max-width：宽屏显示器（横屏）上留白等于浪费，卡片网格会自己多排一列 */
+.content { padding: 18px; width: 100%; }
 
 @media (max-width: 860px) {
   .shell { grid-template-columns: minmax(0, 1fr); }

@@ -102,6 +102,10 @@
           <form id="deviceForm" class="form-row">
             <label>名称<input name="name" required placeholder="douyin-01" /></label>
             <label>套餐<select name="plan_id" id="devicePlanSelect"></select></label>
+            <label>方向<select id="deviceOrient" title="安卓实例的屏幕方向在开机时定死，之后不能转屏">
+              <option value="portrait">竖屏</option>
+              <option value="landscape">横屏</option>
+            </select></label>
             <label>宽<input name="width" type="number" placeholder="720" /></label>
             <label>高<input name="height" type="number" placeholder="1280" /></label>
             <label>DPI<input name="dpi" type="number" placeholder="320" /></label>
@@ -110,6 +114,7 @@
             <button class="btn primary" type="submit">创建</button>
           </form>
           <p class="hint" id="deviceFormHint">选了套餐时，分辨率与内存按套餐规格生效。</p>
+          <p class="hint">方向在开机时定死：安卓容器没有传感器，建好之后不能转屏。要横屏画面就在这里选「横屏」新建一台。</p>
         </div>
         <div id="deviceList" class="device-grid"></div>
       </section>

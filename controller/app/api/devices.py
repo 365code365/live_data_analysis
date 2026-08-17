@@ -477,7 +477,7 @@ def screen_report(device_id: int, payload: ScreenReport, session: Session = Depe
     还是浏览器整页重载。这里记录状态与页面实例，事后一看就知道。
     """
     device = _get(session, device_id)
-    level = {"connected": "info", "connecting": "debug"}.get(payload.state, "warning")
+    level = {"connected": "info", "connecting": "debug", "resized": "info"}.get(payload.state, "warning")
     if payload.state in {"auth_failed", "auth_required", "error"}:
         level = "error"
     events.emit(

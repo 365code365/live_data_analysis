@@ -10,7 +10,12 @@
     device: null, timer: null, jobTimer: null, recording: false,
     unmaskTimer: null, maskShown: false,
     screenConnected: false, screenInstance: null, screenReloads: 0, frameUrl: null,
+    // 画面的真实形状。投屏页会把 VNC 帧缓冲尺寸报过来，手机转横屏后这里跟着变；
+    // 报上来之前先用数据库里的分辨率兜底。
+    fb: null,
   };
+  const screenSize = () => state.fb
+    || (state.device ? { width: state.device.width, height: state.device.height } : null);
 
   // ── 基础 ────────────────────────────────────────────────────────────
   bindModal();
@@ -93,6 +98,9 @@
     if (!ok) {
       state.screenConnected = false;
       state.frameUrl = null;
+      // 画面没了，形状信息也作废，下次连上重新按实际帧缓冲算
+      state.fb = null;
+      state.fbKey = null;
       $('#vncFrame').removeAttribute('src');
       const stopped = d.status === 'stopped' || !cs.android;
       const info = stopped ? null : await api(`/api/devices/${deviceId}/vnc`).catch(() => null);
@@ -132,28 +140,32 @@
     setupAudio(d);
   }
 
-  // ── 尺寸：按设备真实分辨率算，缩放比永不超过 1（不放大）──────────────
+  // ── 尺寸：按画面真实形状算，缩放比永不超过 1（不放大）────────────────
   function applyZoom() {
-    const d = state.device;
-    if (!d) return;
+    const size = screenSize();
+    if (!size) return;
     const frame = $('#screenFrame');
     const wrap = frame.parentElement;
     const availW = Math.max(120, wrap.clientWidth - 4);
     const availH = Math.max(120, wrap.clientHeight - 4);
 
     const mode = localStorage.getItem('ldm_zoom') || 'fit';
-    const fitScale = Math.min(availW / d.width, availH / d.height, 1);
+    const fitScale = Math.min(availW / size.width, availH / size.height, 1);
     let scale = mode === 'fit' ? fitScale : Number(mode);
     // 手动挡也不允许超出可视区域，否则会出现滚动条挡住导航键
-    scale = Math.min(scale, availW / d.width, availH / d.height);
+    scale = Math.min(scale, availW / size.width, availH / size.height);
     scale = Math.max(0.1, scale);
 
-    frame.style.width = `${Math.round(d.width * scale)}px`;
-    frame.style.height = `${Math.round(d.height * scale)}px`;
+    frame.style.width = `${Math.round(size.width * scale)}px`;
+    frame.style.height = `${Math.round(size.height * scale)}px`;
+    // 横屏画面靠宽度吃饭，把右侧操作栏收窄一点让画面更大
+    const landscape = size.width > size.height;
+    $('.console-layout').classList.toggle('landscape', landscape);
+    $('.screen-pane').classList.toggle('landscape', landscape);
 
     const pct = Math.round(scale * 100);
     const info = $('#zoomInfo');
-    info.textContent = `${d.width}×${d.height} · ${pct}%`;
+    info.textContent = `${size.width}×${size.height}${size.width > size.height ? ' 横屏' : ''} · ${pct}%`;
     // 选了 100% 却被压到更小，说明窗口放不下，要讲清楚原因
     const clamped = mode !== 'fit' && Math.abs(scale - Number(mode)) > 0.01;
     info.title = clamped
@@ -178,6 +190,17 @@
       // instance 变了说明投屏页整页重载过（正常的就地重连不会换 instance）
       if (state.screenInstance) state.screenReloads = (state.screenReloads || 0) + 1;
       state.screenInstance = data.instance;
+    }
+
+    // 投屏页会带上 VNC 帧缓冲的真实尺寸。手机转横屏后它会变成横的，
+    // 这里跟着重算 iframe 尺寸，画面才不会被塞进竖框里留大黑边。
+    if (data.width && data.height) {
+      const key = `${data.width}x${data.height}`;
+      if (state.fbKey !== key) {
+        state.fbKey = key;
+        state.fb = { width: data.width, height: data.height };
+        applyZoom();
+      }
     }
 
     switch (data.state) {
@@ -306,7 +329,14 @@
   $('#btnRotate').addEventListener('click', async () => {
     try {
       const r = await api(`/api/devices/${deviceId}/rotate`, { method: 'POST', body: {} });
-      toast(`已旋转到方向 ${r.orientation}`, 'ok');
+      if (r.applied) {
+        toast(`已转到方向 ${r.orientation}，画面形状会自动跟着变`, 'ok');
+      } else {
+        // 转屏请求下发了但显示没动，说明这台实例不支持，讲清楚而不是报个假的成功
+        modal('这台云手机转不了屏', `<div class="alert warn" style="margin:0">
+          <div class="alert-title">已下发方向 ${r.orientation}，但显示仍是方向 ${r.display_rotation ?? '未知'}</div>
+          <div class="alert-body">${esc(r.note || '')}</div></div>`);
+      }
     } catch (err) { toast(err.message, 'err'); }
   });
 

@@ -82,6 +82,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
         xvfb x11vnc x11-utils \
+        # xdotool 用来把 scrcpy 窗口钉死在整块帧缓冲上（它自己算的初始尺寸不可靠），
+        # xrandr 用来在手机横竖屏切换时改帧缓冲尺寸
+        xdotool x11-xserver-utils \
         adb \
         novnc websockify \
         ffmpeg libsdl2-2.0-0 libusb-1.0-0 \

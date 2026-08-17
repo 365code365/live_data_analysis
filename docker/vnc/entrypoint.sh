@@ -53,8 +53,12 @@ if [[ -e "/tmp/.X${DISPLAY_NUM}-lock" ]]; then
 fi
 rm -f /tmp/scrcpy.log /tmp/x11vnc.log /tmp/audio.err 2>/dev/null || true
 
-Xvfb "$DISPLAY" -screen 0 "${SCREEN_WIDTH}x${SCREEN_HEIGHT}x${SCREEN_DEPTH}" \
-  -nolisten tcp -noreset +extension GLX +render &
+# Xvfb 的帧缓冲上限在启动时就定死了（xrandr 只能在这个上限内改），
+# 所以按长边开一块正方形，之后就能自由地在竖屏 WxH 和横屏 HxW 之间切。
+FB_MAX="$SCREEN_WIDTH"; [[ "$SCREEN_HEIGHT" -gt "$FB_MAX" ]] && FB_MAX="$SCREEN_HEIGHT"
+
+Xvfb "$DISPLAY" -screen 0 "${FB_MAX}x${FB_MAX}x${SCREEN_DEPTH}" \
+  -nolisten tcp -noreset +extension GLX +render +extension RANDR &
 XVFB_PID=$!
 CHILD_PIDS+=("$XVFB_PID")
 xvfb_ready=0
@@ -65,7 +69,24 @@ for i in $(seq 1 40); do
   sleep 0.5
 done
 [[ "$xvfb_ready" == "1" ]] || { log "Xvfb 启动失败"; exit 1; }
-log "Xvfb 就绪 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}"
+
+# ── 帧缓冲尺寸 ───────────────────────────────────────────────────────────
+fb_size() { timeout 2 xdpyinfo 2>/dev/null | awk '/^  dimensions:/{print $2; exit}'; }
+
+set_fb() {
+  local w="$1" h="$2"
+  [[ "$(fb_size)" == "${w}x${h}" ]] && return 0
+  # 缩小帧缓冲时 xrandr 会抱怨「output 比新尺寸大」并回一个 BadValue，
+  # 但 RRSetScreenSize 已经生效了（Xvfb 的 output 是个假的，无所谓）。
+  xrandr --fb "${w}x${h}" >/dev/null 2>&1
+  [[ "$(fb_size)" == "${w}x${h}" ]]
+}
+
+if set_fb "$SCREEN_WIDTH" "$SCREEN_HEIGHT"; then
+  log "Xvfb 就绪 ${SCREEN_WIDTH}x${SCREEN_HEIGHT}（可切横屏，上限 ${FB_MAX}x${FB_MAX}）"
+else
+  log "警告: 改帧缓冲失败，退回 ${FB_MAX}x${FB_MAX}（画面会有黑边，横屏也不会自动跟随）"
+fi
 
 # ── PulseAudio（给 scrcpy 一个可写的声卡）────────────────────────────────
 AUDIO_OK=0
@@ -97,7 +118,10 @@ fi
 
 # ── x11vnc ───────────────────────────────────────────────────────────────
 # -nowf 会让部分环境抓不到内容，这里不再使用；剪贴板要双向同步，别加 -nosel
-X11VNC_ARGS=(-display "$DISPLAY" -rfbport "$VNC_PORT" -forever -shared -noxdamage -repeat -xkb)
+# -xrandr resize：帧缓冲尺寸变了（手机转屏）就用 NewFBSize 通知客户端，
+# 而不是让 x11vnc 自己退出。noVNC 支持 NewFBSize，画面会跟着变形状。
+X11VNC_ARGS=(-display "$DISPLAY" -rfbport "$VNC_PORT" -forever -shared -noxdamage -repeat -xkb
+             -xrandr resize)
 if [[ -n "$VNC_PASSWORD" ]]; then
   mkdir -p /root/.vnc
   x11vnc -storepasswd "$VNC_PASSWORD" /root/.vnc/passwd >/dev/null 2>&1
@@ -143,6 +167,52 @@ for i in $(seq 1 180); do
   sleep 2
 done
 log "安卓设备状态: $(timeout 10 adb -s "$ADB_TARGET" get-state 2>/dev/null || echo offline)"
+
+# ── 画面铺满守护 ─────────────────────────────────────────────────────────
+# 两个必须解决的问题：
+#  1. scrcpy 自己算的初始窗口尺寸不可靠。同一个镜像、同样的 --window-width/height，
+#     有时给 720x1280（对），有时给 351x624（约 48.75%），于是 VNC 里手机只占左上角
+#     一小块，其余是黑的。它算窗口尺寸时会参考 X 的可用区域并做 HiDPI 换算，
+#     在 Xvfb + 无窗口管理器的环境下这个推断不成立。这里不跟它较劲，直接钉死几何。
+#  2. 手机转横屏时 scrcpy 会按新画面比例改窗口，但帧缓冲还是竖的，
+#     画面就变成上下大黑边。检测到横比例就把帧缓冲也转过来。
+screen_fit() {
+  local wid geo w h tw th last_orient=""
+  # 把配置的分辨率归一成「竖屏短边 x 长边」，这样不管设备本身是竖的(720x1280)
+  # 还是横的(1280x720)，两个朝向的目标尺寸都算得对。
+  local pw="$SCREEN_WIDTH" ph="$SCREEN_HEIGHT"
+  if (( pw > ph )); then local t="$pw"; pw="$ph"; ph="$t"; fi
+  while :; do
+    sleep 2
+    wid="$(xdotool search --class scrcpy 2>/dev/null | tail -1)"
+    [[ -z "$wid" ]] && continue
+    # --shell 输出形如 WINDOW=..\nX=..\nY=..\nWIDTH=..\nHEIGHT=..
+    geo="$(xdotool getwindowgeometry --shell "$wid" 2>/dev/null)"
+    w="$(sed -n 's/^WIDTH=//p' <<<"$geo")"
+    h="$(sed -n 's/^HEIGHT=//p' <<<"$geo")"
+    [[ -z "$w" || -z "$h" ]] && continue
+    # 刚创建时可能是 1x1 之类的中间态，别拿它判断朝向
+    (( w < 100 || h < 100 )) && continue
+
+    if (( w > h )); then
+      tw="$ph"; th="$pw"
+      [[ "$last_orient" != "landscape" ]] && { log "画面为横屏，帧缓冲 ${tw}x${th}"; last_orient="landscape"; }
+    else
+      tw="$pw"; th="$ph"
+      [[ "$last_orient" != "portrait" ]] && { log "画面为竖屏，帧缓冲 ${tw}x${th}"; last_orient="portrait"; }
+    fi
+
+    set_fb "$tw" "$th" || true
+    # 窗口不等于整块帧缓冲就纠正（比例一致，所以不会拉伸失真）
+    if [[ "$w" != "$tw" || "$h" != "$th" ]]; then
+      xdotool windowmove "$wid" 0 0 windowsize "$wid" "$tw" "$th" >/dev/null 2>&1
+    fi
+  done
+}
+
+screen_fit &
+CHILD_PIDS+=("$!")
+log "画面铺满守护已启动"
 
 SCRCPY_VER="$(scrcpy --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
 SCRCPY_MAJOR="${SCRCPY_VER%%.*}"

@@ -355,19 +355,59 @@ class AndroidDevice:
         return self.volume_info()
 
     # ── 旋转 ──────────────────────────────────────────────────────────
+    ROTATE_UNSUPPORTED = (
+        "这台安卓实例不支持转屏：redroid 的显示尺寸是开机参数定死的，"
+        "没有传感器也不响应 user_rotation，绝大多数直播 App 本身也锁竖屏。"
+        "需要横屏画面就新建一台「宽 > 高」的云手机（例如 1280×720），"
+        "画面会按横屏铺满，不留黑边。"
+    )
+
+    def display_rotation(self) -> Optional[int]:
+        """显示当前实际的旋转（0/1/2/3）。读不到返回 None。
+
+        不能只看 user_rotation：那只是「请求」，App 锁方向或 ROM 不支持时
+        显示根本不会转，而 dumpsys window 里的 mRotation 才是真实结果。
+        """
+        try:
+            raw = self.shell(
+                "dumpsys window 2>/dev/null | grep -m1 -oE 'mRotation=[A-Z_0-9]+'", timeout=20
+            )
+        except Exception:
+            return None
+        m = re.search(r"ROTATION_(\d)", raw or "") or re.search(r"mRotation=(\d)", raw or "")
+        return int(m.group(1)) if m else None
+
     def rotate(self, orientation: Optional[int] = None) -> dict[str, Any]:
-        """orientation 为 0/1/2/3；不传则在竖屏与横屏之间切换。"""
+        """orientation 为 0/1/2/3；不传则在竖屏与横屏之间切换。
+
+        返回里带 applied：转屏请求下发成功不等于真的转了，所以这里会回读
+        实际的显示旋转再告诉调用方，别让界面报一个假的「已旋转」。
+        """
+        before = self.display_rotation()
         self.shell(["settings", "put", "system", "accelerometer_rotation", "0"])
         if orientation is None:
-            cur = self.shell(["settings", "get", "system", "user_rotation"]).strip()
-            try:
-                cur_i = int(cur)
-            except ValueError:
-                cur_i = 0
-            orientation = 1 if cur_i in (0, 2) else 0
+            base = before if before is not None else 0
+            orientation = 1 if base in (0, 2) else 0
         orientation = int(orientation) % 4
+
         self.shell(["settings", "put", "system", "user_rotation", str(orientation)])
-        return {"orientation": orientation}
+        # 有些 ROM 只认窗口管理器这条路（同时能压过 App 自己锁的方向）
+        try:
+            self.shell(["cmd", "window", "user-rotation", "-d", "0", "lock", str(orientation)], timeout=20)
+        except Exception as exc:
+            log.debug("cmd window user-rotation 不可用: %s", exc)
+
+        time.sleep(1.5)
+        after = self.display_rotation()
+        applied = after is not None and after == orientation
+        result: dict[str, Any] = {
+            "orientation": orientation,
+            "display_rotation": after,
+            "applied": applied,
+        }
+        if not applied:
+            result["note"] = self.ROTATE_UNSUPPORTED
+        return result
 
     def screen_size(self) -> tuple[int, int]:
         raw = self.shell("wm size")

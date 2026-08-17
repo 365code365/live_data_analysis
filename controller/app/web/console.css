@@ -5,14 +5,16 @@
 .console-layout {
   display: grid;
   /* 侧栏跟着窗口宽度收缩，不再是死的 400px */
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 30vw, 380px);
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 26vw, 400px);
   gap: 14px;
   padding: 14px 16px 18px;
   height: calc(100vh - var(--topbar-h) - 4px);
-  max-width: 1600px;
-  margin: 0 auto;
+  /* 不设 max-width：宽屏显示器上要把画面撑到最大，留白等于浪费 */
+  width: 100%;
   box-sizing: border-box;
 }
+/* 手机转成横屏后画面靠宽度吃饭，右侧操作栏收窄，画面能大一圈 */
+.console-layout.landscape { grid-template-columns: minmax(0, 1fr) clamp(260px, 20vw, 330px); }
 /* grid 子项默认 min-width:auto，内容撑宽后就会溢出，必须显式归零 */
 .screen-pane, .side-pane { min-width: 0; }
 
