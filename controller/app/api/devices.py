@@ -383,6 +383,16 @@ def set_volume(device_id: int, payload: VolumeAction, session: Session = Depends
     return dev.volume_step(payload.action)
 
 
+@router.post("/{device_id}/display/keep-awake")
+def keep_awake(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """把屏幕设成常亮（息屏时投屏是全黑的）。"""
+    device = _get(session, device_id)
+    dev = get_device(device.adb_addr)
+    if not dev.is_online():
+        raise HTTPException(409, _offline_reason(device))
+    return dev.prepare_display()
+
+
 @router.post("/{device_id}/rotate")
 def rotate(device_id: int, payload: RotateAction, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)

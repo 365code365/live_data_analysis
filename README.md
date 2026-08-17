@@ -22,11 +22,15 @@
 | 能力 | 说明 |
 | --- | --- |
 | 安卓虚拟机 | redroid 容器化安卓，单机可跑多实例，`/data` 持久化（保留登录态） |
-| VNC 远程桌面 | 浏览器内 noVNC 直接看屏、点屏（扫码登录、过验证码全靠它） |
-| IP 代理 | 每设备一个网关容器，SOCKS5 / HTTP 代理全局透明接管（含 UDP、DNS 防泄漏） |
+| 设备控制台 | 一台设备一个页面：干净的屏幕（noVNC 精简页，无多余工具栏）+ 安卓三大金刚 + 常用按键 |
+| 声音 | 设备音频经 scrcpy → PulseAudio → ffmpeg 转 mp3 流，网页里直接听，音量可调（网页音量 + 设备媒体音量） |
+| 外部文本粘贴 | 浏览器里的文字一键送进安卓，中文可用（原生剪贴板 → ADBKeyboard → input text 三级回退） |
+| 应用安装 | 上传 apk、粘贴直链下载、内置应用目录（应用商店）三种方式，带下载/安装进度；支持启动与卸载 |
+| IP 代理 | 每设备一个网关容器，SOCKS5 / HTTP 代理全局透明接管（含 UDP、DNS 防泄漏、kill switch） |
 | 直播间监控 | 定时进入直播间，抓标题、主播、在线人数、点赞、弹幕 |
 | 商品监控 | 打开购物袋/商品列表，抓商品名、价格、划线价、库存/销量、排序位次 |
-| 直播录屏 | 分段 `screenrecord` + ffmpeg 无损合并，长时间录制不丢帧 |
+| 直播录屏 | 分段 `screenrecord` + ffmpeg 无损合并；**网页内直接预览**（Range 分片，可拖进度），也可下载 |
+| 商业化计费 | 套餐/定价后台可配（不同规格不同价格），支付宝 / 微信扫码付款，权益与设备配额自动核算 |
 | 数据留存 | SQLite（可换 Postgres）+ 本地文件（截图 / 录像 / UI dump） |
 
 ## 运行要求
@@ -111,6 +115,78 @@ open http://localhost:8000      # Web 控制台
 4. 「任务」页新建监控任务：平台 + 直播间标识（抖音 `webcast_id`/短链、小红书 `user_id`/直播链接）+ 采集间隔 + 是否录屏。
 5. 「数据」页看直播间快照与商品变动曲线；「录像」页下载 mp4。
 
+## 设备控制台
+
+设备卡片上点「打开控制台」，或直接访问 `/console?device=<id>`。左边是屏幕，右边是操作区：
+
+- **屏幕**：用 noVNC 自带的 `vnc_lite.html`，只有画面，没有工具栏和设置面板；比例按设备分辨率自适应
+- **导航键**：屏幕正下方是安卓三大金刚（返回 / 主页 / 最近任务），另有电源、菜单、回车、退格、Tab、Esc
+- **声音**：顶栏「声音」开关 + 网页音量条；右侧还有设备侧媒体音量（直接写进安卓）
+- **粘贴外部文本**：粘到文本框点一下就进安卓，支持中文
+- **应用**：应用目录一键装、直链装、上传装，带进度条；已装应用可启动/卸载
+- **其它**：旋转屏幕、截图、开始/停止录屏、唤醒常亮
+
+### 中文粘贴的原理与前提
+
+安卓没有一个到处都好用的文本注入通道，控制台按可靠性依次回退：
+
+1. `cmd clipboard set-text` + `KEYCODE_PASTE` —— 原生，写完会读回来比对确认（redroid/AOSP 上这个服务通常没实现，会自动降级）
+2. **ADBKeyboard** 广播 —— 中文可用。在「应用」里一键安装即可，装完控制器会自动把它设为当前输入法
+3. `input text` —— 只能 ASCII
+
+注意 ADBKeyboard 是往**当前聚焦的输入框**里注入，所以粘贴前请先在屏幕上点一下目标输入框。
+
+## 声音链路
+
+```
+安卓系统混音 → scrcpy --audio-source=output → PulseAudio null sink
+            → ffmpeg -f pulse → HTTP mp3 流（设备的音频端口）→ 浏览器 <audio>
+```
+
+- VNC 镜像里的 scrcpy 是**源码编译的 3.3.3**：发行版仓库里的 1.25 不支持音频转发，
+  而 4.x 起要 SDL3（Ubuntu 24.04 只有 SDL2），3.3.3 是最后一个用 SDL2 且带音频的大版本
+- 每台设备占 3 个宿主端口：adb / noVNC / 音频
+- 音频流用 `ffmpeg -listen 1`，同一时刻只服务一个听众（控制台场景够用）；
+  要多人同时听就在前面挂一层 nginx / icecast 转发
+- 不需要声音时把设备的 `enable_audio` 关掉，整条链路不会启动
+
+## 商业化：套餐、定价与支付
+
+「套餐」页给用户下单，「后台」页给运营改价改配置。
+
+- **不同配置不同价格**：套餐规格包含分辨率、DPI、内存、CPU 核数、设备数、任务数、
+  是否含代理/录屏/声音、有效天数。用套餐开出来的设备会按规格限制容器资源（`mem_limit` / `cpu_quota`）
+- **权益与配额**：支付成功即发放权益（有效期 + 设备名额）。开设备时占用名额，超额直接拒绝；
+  到期由调度器自动失效
+- **支付渠道**：支付宝当面付（`alipay.trade.precreate`）、微信支付 v3 Native，都是扫码付；
+  二维码由服务端渲染成 PNG，前端不引任何二维码库
+- **回调安全**：支付宝按 RSA2 验签，微信按 v3 规则验签 + APIv3 密钥 AES-GCM 解密；
+  验签不过直接拒绝。金额与订单不符也拒绝，防改价
+- **关单保护**：订单超时关闭前会再向渠道确认一次是否已支付，避免「最后一秒付款却被关单」
+
+```bash
+# .env 里配置
+BILLING_ENABLED=true
+BILLING_ENFORCE=false          # 改 true 后「创建设备」必须先买套餐
+SITE_BASE_URL=https://你的域名   # 支付回调地址由它拼出来，必须公网可达
+PAYMENT_CHANNELS=alipay,wechat  # 本地联调可用 mock
+ADMIN_TOKEN=随便一串长字符串      # 设了之后后台定价接口需要 X-Admin-Token
+```
+
+需要在支付平台后台填的回调地址：
+
+```
+https://你的域名/api/billing/notify/alipay
+https://你的域名/api/billing/notify/wechat
+```
+
+> **`mock` 通道**：不接真实网关，二维码指向控制台自己的一个链接，打开即视为付款成功。
+> 用它可以在没有商户号的情况下把「下单 → 付款 → 发权益 → 按规格开设备」整条链路跑通。
+> 上线收款前务必把 `PAYMENT_CHANNELS` 里的 mock 去掉。
+>
+> 支付宝/微信两个适配器的签名与验签按官方文档实现，但**本项目没有做真实商户联调**，
+> 上线前请先用沙箱或小额真实订单验证一遍。
+
 ## 目录结构
 
 ```
@@ -119,10 +195,14 @@ docker/
   vnc/             画面镜像（Xvfb + scrcpy + x11vnc + noVNC）
   controller/      控制器镜像（Python + adb + ffmpeg）
 controller/app/
-  core/            docker 编排、代理管理、设备池、adb、录屏、调度
+  core/            docker 编排、代理、adb/安卓操作、录屏、应用安装、计费、调度
+    payments/      支付通道（alipay / wechat / mock，可插拔）
   platforms/       抖音 / 小红书采集适配器 + 可外部覆写的选择器配置
-  api/             REST 接口
-  web/             控制台前端（原生 HTML/JS + noVNC iframe）
+  api/             REST 接口（devices / apps / billing / recordings / data / system）
+  web/             控制台前端（原生 HTML/JS，无构建步骤）
+    index.html     总控制台：概览/设备/应用/代理/任务/数据/录像/套餐/后台/事件
+    console.html   单设备控制台：屏幕 + 快捷操作 + 声音 + 粘贴 + 应用
+  apps_catalog.yaml  应用目录（应用商店条目，可用 APPS_CATALOG_FILE 覆盖）
 scripts/           宿主机准备与运维脚本
 data/              运行期数据（db / 截图 / 录像 / 安卓 /data 卷）
 ```
@@ -199,6 +279,67 @@ docker logs ldm_vnc_1 | grep '^\[vnc'
 App 改版了。用控制台设备卡上的 **UI Dump** 看当前界面真实控件树，
 再对着调 `controller/app/platforms/selectors/*.yaml`，改完调用
 `POST /api/system/selectors/reload` 热加载，不用重启容器。
+
+### 控制台里没有画面
+
+先用这个脚本把「服务端链路」和「前端页面」分开定位：
+
+```bash
+python3 scripts/check-vnc-handshake.py localhost 21001   # 换成设备的 noVNC 端口
+```
+
+它用标准库做一次真实的 WebSocket 握手并读 RFB 版本号。看到
+`x11vnc 回了 RFB 版本: RFB 003.008` 就说明 websockify → x11vnc 这段没问题，
+问题在前端页面或密码参数；反之则是容器侧的问题（继续看下一节和 `docker logs ldm_vnc_1`）。
+
+投屏页用的是本项目自带的 `screen.html`（在 VNC 镜像里，直接调 noVNC 的 RFB 内核），
+只渲染画面，没有任何自带 UI。它会把连接状态用 `postMessage` 抛给控制台，
+所以认证失败、连接中断这类问题会直接显示原因，而不是给你一片黑。
+
+> 不要用 noVNC 自带的 `vnc_lite.html`：1.3 版里它的缩放参数叫 `scale`（不是 `resize`），
+> 而且实测在 iframe 里握手会停在 ProtocolVersion 不往下走（x11vnc 日志是
+> `rfbProcessClientProtocolVersion: client gone`，传输 0 字节）。
+
+### 画面比手机屏幕大 / 被拉伸
+
+控制台顶栏有「显示」下拉：**适应窗口**（默认，等比缩小，绝不放大）、**100%（1:1 原始像素）**、75%、50%。
+右边会实时显示当前是 `720×1280 · 100%（原始像素）` 这样的信息。
+
+实现上 iframe 尺寸是按「设备分辨率 × 缩放比」算出来的精确像素值，且缩放比上限是 1，
+所以不会出现把 720×1280 拉大到窗口尺寸的失真。
+
+### 屏幕是黑的但 scrcpy 日志正常
+
+先确认是不是安卓自己息屏了：
+
+```bash
+curl -s -X POST localhost:8000/api/devices/1/display/keep-awake
+```
+
+监控场景屏幕必须常亮。控制器会在设备开机后自动设置常亮，运行期发现息屏也会自动救回来
+（`screen_off_timeout` 拉满 + `svc power stayon true`）。scrcpy 自带的 `--stay-awake`
+依赖「充电中」状态，redroid 不一定上报，所以不能只靠它。
+
+### 网页里听不到声音
+
+按顺序排查：
+
+```bash
+curl -s localhost:8000/api/devices/1 | grep -o '"enable_audio":[a-z]*'   # 设备是否开了声音
+docker exec ldm_vnc_1 pactl list short sinks                            # 应看到 ldm ... RUNNING
+docker exec ldm_vnc_1 sh -c 'grep -i audio /tmp/scrcpy.log'              # scrcpy 是否转发了音频
+docker logs ldm_vnc_1 | grep '^\[audio'                                  # 音频流是否在监听
+```
+
+浏览器首次点「声音」可能被自动播放策略拦掉，再点一次即可。
+另外音频流同一时刻只接一个听众，别开多个标签页同时听。
+
+### 支付回调收不到 / 订单一直 pending
+
+- 本地没有公网回调时，控制器每 2 分钟会主动向渠道查一次订单状态兜底，
+  前端轮询 `GET /api/billing/orders/{order_no}` 也会顺带查一次
+- 回调地址必须公网可达且与支付平台后台配置一致，看 `GET /api/billing/config` 里的 `notify_urls`
+- 验签失败会返回 400 并在日志里写明原因，不会把订单置为已付
 
 ### 代理配了但出口 IP 没变
 

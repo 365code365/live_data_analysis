@@ -18,16 +18,19 @@
 
 /* ── 屏幕 ─────────────────────────────────────────────── */
 .screen-pane { display: flex; flex-direction: column; align-items: center; min-width: 0; }
+/* 尺寸由 JS 按「设备分辨率 × 缩放比」精确设置，且缩放比不超过 1，
+   所以画面不会被放大失真；容器不参与拉伸，只负责居中。 */
+.screen-wrap {
+  flex: 1; min-height: 0; width: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
 .screen-frame {
   position: relative;
   background: #000;
   border: 1px solid var(--border);
   border-radius: 14px;
   overflow: hidden;
-  flex: 1;
-  min-height: 0;
-  /* 比例由 JS 按设备分辨率设置 */
-  aspect-ratio: 9 / 16;
+  flex: none;
 }
 .screen-frame iframe { width: 100%; height: 100%; border: 0; display: block; background: #000; }
 

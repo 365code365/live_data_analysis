@@ -18,6 +18,13 @@
       <label class="switch"><input type="checkbox" id="audioOn" /> 声音</label>
       <input type="range" id="webVolume" min="0" max="100" value="80" title="网页播放音量" />
       <span class="sub" id="webVolumeLabel">80%</span>
+      <label>显示<select id="zoomSelect">
+        <option value="fit">适应窗口</option>
+        <option value="1">100%（1:1 原始像素）</option>
+        <option value="0.75">75%</option>
+        <option value="0.5">50%</option>
+      </select></label>
+      <span class="sub" id="zoomInfo"></span>
       <a class="btn ghost" href="/">返回控制台</a>
     </div>
   </header>
@@ -25,13 +32,15 @@
   <main class="console-layout">
     <!-- 屏幕 -->
     <section class="screen-pane">
-      <div class="screen-frame" id="screenFrame">
-        <iframe id="vncFrame" title="设备屏幕" allow="clipboard-read; clipboard-write"></iframe>
-        <div class="screen-mask" id="screenMask">
-          <div class="mask-inner">
-            <div class="mask-title" id="maskTitle">正在连接设备…</div>
-            <div class="mask-body" id="maskBody"></div>
-            <button class="btn small" id="maskRetry">重试</button>
+      <div class="screen-wrap">
+        <div class="screen-frame" id="screenFrame">
+          <iframe id="vncFrame" title="设备屏幕" allow="clipboard-read; clipboard-write"></iframe>
+          <div class="screen-mask" id="screenMask">
+            <div class="mask-inner">
+              <div class="mask-title" id="maskTitle">正在连接设备…</div>
+              <div class="mask-body" id="maskBody"></div>
+              <button class="btn small" id="maskRetry">重试</button>
+            </div>
           </div>
         </div>
       </div>
@@ -61,7 +70,7 @@
           <button class="btn small" data-key="KEYCODE_ESCAPE">Esc</button>
           <button class="btn small" id="btnRotate">旋转屏幕</button>
           <button class="btn small" id="btnShot">截图</button>
-          <button class="btn small" id="btnWake">唤醒</button>
+          <button class="btn small" id="btnWake">唤醒常亮</button>
           <button class="btn small" id="btnRecord">开始录屏</button>
         </div>
       </div>

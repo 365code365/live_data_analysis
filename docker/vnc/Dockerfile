@@ -98,7 +98,11 @@ RUN ldconfig \
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY audio-stream.sh /usr/local/bin/audio-stream
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/audio-stream
+# 自己的极简投屏页：只有画面，没有 noVNC 自带的控制栏
+COPY screen.html /usr/share/novnc/screen.html
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/audio-stream \
+    && test -f /usr/share/novnc/core/rfb.js \
+    && echo "noVNC 内核模块可用"
 
 ENV DISPLAY=":0" \
     ADB_TARGET="127.0.0.1:5555" \

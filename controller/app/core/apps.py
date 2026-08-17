@@ -185,6 +185,10 @@ class AppJobManager:
                 raise AndroidError("安卓还没启动完成，稍等 1-2 分钟再装")
             out = dev.install_apk(str(path))
             pkg = self._guess_package(dev, path)
+            # ADBKeyboard 只有被设为当前输入法才起作用，装完顺手切过去，
+            # 免得用户以为「装了却还是不能粘中文」
+            if dev.is_installed(dev.ADBKEYBOARD_PKG):
+                dev.ensure_adbkeyboard_ime()
             self._set(
                 device_id,
                 state="done",

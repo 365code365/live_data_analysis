@@ -318,6 +318,18 @@ def sync_status(session: Session, device: Device) -> dict[str, Any]:
         android = dev.device_info()
         if android.get("booted") and device.booted_at is None:
             device.booted_at = utcnow()
+            # 开机后立刻把屏幕设成常亮，否则息屏后投屏就是一片黑
+            try:
+                android["display"] = dev.prepare_display()
+                events.emit("已设置屏幕常亮", source="device", device_id=device.id)
+            except Exception as exc:
+                log.warning("设置屏幕常亮失败 device=%s: %s", device.id, exc)
+        elif android.get("booted") and not dev.screen_on():
+            # 运行期被误关屏（比如手动按了电源键）也自动救回来
+            try:
+                dev.prepare_display()
+            except Exception as exc:
+                log.debug("重新点亮屏幕失败: %s", exc)
 
     device.updated_at = utcnow()
     session.add(device)

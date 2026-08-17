@@ -154,8 +154,12 @@ run_scrcpy() {
   local args=(-s "$ADB_TARGET"
               --window-borderless --window-x 0 --window-y 0
               --window-width "$SCREEN_WIDTH" --window-height "$SCREEN_HEIGHT"
-              --stay-awake --max-fps "${SCRCPY_MAX_FPS:-30}"
-              --render-driver=software)
+              --stay-awake --max-fps "${SCRCPY_MAX_FPS:-30}")
+
+  # 3.x 会对 --render-driver 报 "Could not set render driver"，
+  # 但 SDL_RENDER_DRIVER 环境变量本身就生效（实测能被 x11vnc 抓到画面），
+  # 所以只对老版本传这个参数，避免日志里出现误导人的告警。
+  [[ "${SCRCPY_MAJOR:-1}" -lt 3 ]] && args+=(--render-driver=software)
 
   if [[ "${SCRCPY_MAJOR:-1}" -ge 2 ]]; then
     args+=(--video-bit-rate "${SCRCPY_BITRATE:-8M}")
@@ -169,6 +173,8 @@ run_scrcpy() {
     args+=(--bit-rate "${SCRCPY_BITRATE:-8M}")
   fi
   [[ "${SCRCPY_MAX_SIZE:-0}" != "0" ]] && args+=(--max-size "$SCRCPY_MAX_SIZE")
+  # 屏幕灭着的时候投出来是全黑，顺手点亮（控制器也会周期性保证常亮）
+  adb -s "$ADB_TARGET" shell "input keyevent KEYCODE_WAKEUP; svc power stayon true" >/dev/null 2>&1 || true
 
   log "启动 scrcpy（音频=${with_audio}）"
   scrcpy "${args[@]}"

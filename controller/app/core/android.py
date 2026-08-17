@@ -197,6 +197,40 @@ class AndroidDevice:
         self.shell("input keyevent KEYCODE_WAKEUP")
         self.shell("svc power stayon true")
 
+    def screen_on(self) -> bool:
+        try:
+            return "ON" in self.shell("dumpsys display | grep -m1 mScreenState", timeout=20)
+        except Exception:
+            return False
+
+    def prepare_display(self) -> dict[str, Any]:
+        """让屏幕保持常亮。
+
+        监控场景下屏幕一灭，scrcpy 投出来的就是全黑，看着像投屏坏了。
+        scrcpy 的 --stay-awake 依赖「充电中」状态，redroid 未必上报，
+        所以这里直接改系统设置 + svc power stayon 双保险。
+        """
+        result: dict[str, Any] = {}
+        cmds = [
+            # 永不自动息屏
+            ("screen_off_timeout", "settings put system screen_off_timeout 2147483647"),
+            # 任何供电状态都保持常亮（0x7 = AC|USB|WIRELESS）
+            ("stayon", "svc power stayon true"),
+            # 关掉屏保与锁屏动画干扰
+            ("screensaver", "settings put secure screensaver_enabled 0"),
+            ("wakeup", "input keyevent KEYCODE_WAKEUP"),
+            # 已经在锁屏上时划开
+            ("unlock", "input keyevent KEYCODE_MENU"),
+        ]
+        for name, cmd in cmds:
+            try:
+                self.shell(cmd, timeout=20)
+                result[name] = "ok"
+            except Exception as exc:
+                result[name] = f"failed: {exc}"
+        result["screen_on"] = self.screen_on()
+        return result
+
     # ── 剪贴板 / 文本输入 ─────────────────────────────────────────────
     ADBKEYBOARD_PKG = "com.android.adbkeyboard"
 
@@ -211,21 +245,24 @@ class AndroidDevice:
         if not text:
             return {"ok": False, "method": None, "error": "文本为空"}
 
-        # 1) 原生剪贴板
+        # 1) 原生剪贴板。注意不能只看有没有报错：
+        #    redroid/AOSP 上 `cmd clipboard` 会回一句
+        #    "No shell command implementation."，退出码却是 0。
+        #    唯一可靠的判断是写完立刻读回来比对。
         try:
-            out = self.shell(["cmd", "clipboard", "set-text", text], timeout=20)
-            low = (out or "").lower()
-            if "exception" not in low and "unknown command" not in low and "error" not in low:
+            self.shell(["cmd", "clipboard", "set-text", text], timeout=20)
+            if (self.get_clipboard() or "") == text:
                 self.key(279)  # KEYCODE_PASTE
                 if submit:
                     self.key("KEYCODE_ENTER")
-                return {"ok": True, "method": "clipboard", "detail": out.strip()[:200]}
+                return {"ok": True, "method": "clipboard"}
         except Exception as exc:
             log.debug("cmd clipboard 不可用: %s", exc)
 
-        # 2) ADBKeyboard
+        # 2) ADBKeyboard（装了就自动设为当前输入法，否则广播不生效）
         if self.is_installed(self.ADBKEYBOARD_PKG):
             try:
+                self.ensure_adbkeyboard_ime()
                 self.shell(
                     ["am", "broadcast", "-a", "ADB_INPUT_TEXT", "--es", "msg", text],
                     timeout=20,
@@ -252,14 +289,38 @@ class AndroidDevice:
             ),
         }
 
+    # AOSP 在 clipboard 服务没实现 shell 命令时会回这句，退出码仍是 0
+    _NO_IMPL = "no shell command implementation"
+
     def get_clipboard(self) -> Optional[str]:
         try:
             out = self.shell(["cmd", "clipboard", "get-text"], timeout=15)
-            if out and "exception" not in out.lower():
-                return out.strip()
         except Exception:
-            pass
-        return None
+            return None
+        if not out:
+            return None
+        low = out.lower()
+        if self._NO_IMPL in low or "exception" in low or "unknown command" in low:
+            return None
+        return out.strip()
+
+    IME_ID = "com.android.adbkeyboard/.AdbIME"
+
+    def ensure_adbkeyboard_ime(self) -> bool:
+        """把 ADBKeyboard 设为当前输入法。它只有被选中时广播才会生效。"""
+        try:
+            current = self.shell(["settings", "get", "secure", "default_input_method"], timeout=15).strip()
+            if self.IME_ID in current:
+                return True
+            self.shell(["ime", "enable", self.IME_ID], timeout=20)
+            self.shell(["ime", "set", self.IME_ID], timeout=20)
+            after = self.shell(["settings", "get", "secure", "default_input_method"], timeout=15).strip()
+            ok = self.IME_ID in after
+            log.info("切换输入法到 ADBKeyboard: %s", "成功" if ok else f"失败(当前={after})")
+            return ok
+        except Exception as exc:
+            log.warning("设置 ADBKeyboard 输入法失败: %s", exc)
+            return False
 
     # ── 音量 ──────────────────────────────────────────────────────────
     MUSIC_STREAM = 3

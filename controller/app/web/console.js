@@ -7,7 +7,7 @@
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   const deviceId = Number(new URLSearchParams(location.search).get('device') || 0);
-  const state = { device: null, timer: null, jobTimer: null, recording: false };
+  const state = { device: null, timer: null, jobTimer: null, recording: false, unmaskTimer: null };
 
   // ── 基础 ────────────────────────────────────────────────────────────
   async function api(path, { method = 'GET', body, form } = {}) {
@@ -68,8 +68,7 @@
     $('#devMeta').textContent = `${d.width}×${d.height} @${d.dpi}dpi · ${d.proxy_name || '直连'}`;
     document.title = `${d.name} · 设备控制台`;
 
-    const frame = $('#screenFrame');
-    frame.style.aspectRatio = `${d.width} / ${d.height}`;
+    applyZoom();
 
     const cs = d.container_states || {};
     const ok = cs.vnc === 'running' && cs.android === 'running';
@@ -96,17 +95,71 @@
       return;
     }
 
-    // vnc_lite.html 是 noVNC 自带的极简页：只有画面，没有工具栏/设置面板
-    const url = `http://${location.hostname}:${d.novnc_port}/vnc_lite.html`
-      + `?password=${encodeURIComponent(d.vnc_password || '')}&resize=scale&reconnect=1&show_dot=1`;
+    // 兜底：万一投屏页没回状态（比如镜像是旧版），别一直挡着画面
+    if (!state.unmaskTimer) {
+      mask('正在连接画面…', '');
+      state.unmaskTimer = setTimeout(() => {
+        state.unmaskTimer = null;
+        unmask();
+      }, 9000);
+    }
+
+    // screen.html 是本项目自带的极简投屏页（在 VNC 镜像里），
+    // 直接用 noVNC 的 RFB 内核，只渲染画面，没有任何自带 UI。
+    const url = `http://${location.hostname}:${d.novnc_port}/screen.html`
+      + `?password=${encodeURIComponent(d.vnc_password || '')}&scale=1&reconnect=1`;
     const frameEl = $('#vncFrame');
     if (frameEl.dataset.url !== url) {
       frameEl.dataset.url = url;
       frameEl.src = url;
     }
-    unmask();
     setupAudio(d);
   }
+
+  // ── 尺寸：按设备真实分辨率算，缩放比永不超过 1（不放大）──────────────
+  function applyZoom() {
+    const d = state.device;
+    if (!d) return;
+    const frame = $('#screenFrame');
+    const wrap = frame.parentElement;
+    const availW = Math.max(120, wrap.clientWidth - 4);
+    const availH = Math.max(120, wrap.clientHeight - 4);
+
+    const mode = localStorage.getItem('ldm_zoom') || 'fit';
+    const fitScale = Math.min(availW / d.width, availH / d.height, 1);
+    let scale = mode === 'fit' ? fitScale : Number(mode);
+    // 手动挡也不允许超出可视区域，否则会出现滚动条挡住导航键
+    scale = Math.min(scale, availW / d.width, availH / d.height);
+    scale = Math.max(0.1, scale);
+
+    frame.style.width = `${Math.round(d.width * scale)}px`;
+    frame.style.height = `${Math.round(d.height * scale)}px`;
+    $('#zoomInfo').textContent =
+      `${d.width}×${d.height} · ${Math.round(scale * 100)}%${scale >= 0.999 ? '（原始像素）' : ''}`;
+  }
+
+  $('#zoomSelect').addEventListener('change', (e) => {
+    localStorage.setItem('ldm_zoom', e.target.value);
+    applyZoom();
+  });
+  window.addEventListener('resize', () => applyZoom());
+
+  // 投屏页把连接状态抛过来，这样黑屏时能看到真实原因
+  window.addEventListener('message', (e) => {
+    const data = e.data || {};
+    if (data.source !== 'ldm-screen') return;
+    if (data.state === 'connected') {
+      clearTimeout(state.unmaskTimer);
+      state.unmaskTimer = null;
+      unmask();
+    } else if (data.state === 'auth_required' || data.state === 'auth_failed') {
+      mask('VNC 认证失败', `${data.detail || ''}\n设备的 VNC 密码可能被改过，重启设备可重新下发。`);
+    } else if (data.state === 'disconnected') {
+      mask('画面连接中断', '正在自动重连…');
+    } else if (data.state === 'error') {
+      mask('画面加载失败', data.detail || '');
+    }
+  });
 
   // ── 声音 ────────────────────────────────────────────────────────────
   function setupAudio(d) {
@@ -193,8 +246,8 @@
 
   $('#btnWake').addEventListener('click', async () => {
     try {
-      await api(`/api/devices/${deviceId}/key/KEYCODE_WAKEUP`, { method: 'POST' });
-      toast('已唤醒', 'ok');
+      const r = await api(`/api/devices/${deviceId}/display/keep-awake`, { method: 'POST' });
+      toast(r.screen_on ? '屏幕已点亮并设为常亮' : '已下发常亮设置，稍等一下', 'ok');
     } catch (err) { toast(err.message, 'err'); }
   });
 
@@ -385,6 +438,7 @@
   // ── 启动 ────────────────────────────────────────────────────────────
   async function boot() {
     if (!deviceId) { mask('缺少参数', '请从设备列表进入控制台'); return; }
+    $('#zoomSelect').value = localStorage.getItem('ldm_zoom') || 'fit';
     try {
       await loadDevice();
       await loadCatalog();
