@@ -342,6 +342,10 @@ input[type="file"] { padding: 6px; }
 }
 .pick:hover { border-color: var(--border-strong); }
 .pick.active { border-color: var(--accent); background: var(--accent-soft); }
+/* 宿主装不下的档位：看得见但明显不可选（点了会解释原因） */
+.pick.unfit { opacity: .5; border-style: dashed; }
+.pick.unfit .pick-badge { background: var(--err); }
+.pick.unfit .pick-note { color: var(--err); }
 .pick-name { font-size: 13.5px; font-weight: 600; }
 .pick-spec { font-size: 11.5px; color: var(--text-2); margin-top: 3px; }
 .pick-note { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.55; }

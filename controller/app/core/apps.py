@@ -181,9 +181,8 @@ class AppJobManager:
 
             self._set(device_id, state="installing", percent=100.0, message="正在安装到设备…")
             dev = get_device(addr)
-            if not dev.is_booted():
-                raise AndroidError("安卓还没启动完成，稍等 1-2 分钟再装")
-            out = dev.install_apk(str(path))
+            self._wait_ready(device_id, dev)
+            out = self._install_with_retry(device_id, dev, path)
             pkg = self._guess_package(dev, path)
             # ADBKeyboard 只有被设为当前输入法才起作用，装完顺手切过去，
             # 免得用户以为「装了却还是不能粘中文」
@@ -205,6 +204,52 @@ class AppJobManager:
         finally:
             if path and not keep_file:
                 path.unlink(missing_ok=True)
+
+    # adb 偶发瞬断（画面容器重连、主机 CPU 吃紧、安卓侧 adbd 重启）时，
+    # 之前一次 "device offline" 就直接把安装任务判失败。装一个大 apk 前后要几十秒，
+    # 撞上一次抖动的概率不低，所以这里等一等、失败重试几次。
+    READY_WAIT_SECONDS = 90.0
+    INSTALL_ATTEMPTS = 3
+
+    def _wait_ready(self, device_id: int, dev: AndroidDevice) -> None:
+        deadline = time.time() + self.READY_WAIT_SECONDS
+        last = ""
+        while time.time() < deadline:
+            try:
+                if dev.is_booted():
+                    return
+                last = "安卓还在开机"
+            except Exception as exc:  # adb 掉线也走这里
+                last = str(exc)
+            left = int(deadline - time.time())
+            self._set(device_id, message=f"等设备就绪（{last}），剩 {left}s")
+            dev.connect()
+            time.sleep(3)
+        raise AndroidError(f"设备一直没就绪（{last or '未知原因'}），稍后再试")
+
+    def _install_with_retry(self, device_id: int, dev: AndroidDevice, path: Path) -> str:
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, self.INSTALL_ATTEMPTS + 1):
+            try:
+                if attempt > 1:
+                    self._set(device_id, message=f"重试安装（第 {attempt}/{self.INSTALL_ATTEMPTS} 次）")
+                return dev.install_apk(str(path))
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc).lower()
+                # 只对「连接类」问题重试；INSTALL_FAILED_* 之类是包本身的问题，重试没意义
+                transient = any(
+                    k in msg for k in ("offline", "closed", "timeout", "not found", "connection", "device '")
+                )
+                if not transient or attempt == self.INSTALL_ATTEMPTS:
+                    raise
+                log.warning("安装第 %s 次失败（%s），等 adb 恢复后重试", attempt, str(exc)[:120])
+                self._set(device_id, message="设备连接抖动，正在重连…")
+                dev.disconnect()
+                time.sleep(4)
+                dev.connect()
+                self._wait_ready(device_id, dev)
+        raise last_exc or AndroidError("安装失败")
 
     def _download(self, device_id: int, url: str, filename: Optional[str]) -> Path:
         settings.apk_dir.mkdir(parents=True, exist_ok=True)

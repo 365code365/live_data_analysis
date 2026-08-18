@@ -92,10 +92,12 @@ fi
 AUDIO_OK=0
 if [[ "$ENABLE_AUDIO" == "true" ]]; then
   mkdir -p /run/pulse /var/lib/pulse
-  # 系统模式：容器里一切都是 root，per-user 模式 PulseAudio 会直接拒绝启动
+  # 系统模式：容器里一切都是 root，per-user 模式 PulseAudio 会直接拒绝启动。
+  # null sink 固定 48kHz：安卓侧出来的就是 48k，sink 若按默认 44.1k 建，
+  # pulse 每一包都要重采样，白吃 CPU。两端对齐后省掉这道活。
   pulseaudio --system --disallow-exit --exit-idle-time=-1 -n \
     --load="module-native-protocol-unix auth-anonymous=1 socket=/run/pulse/native" \
-    --load="module-null-sink sink_name=${AUDIO_SINK} sink_properties=device.description=${AUDIO_SINK}" \
+    --load="module-null-sink sink_name=${AUDIO_SINK} rate=48000 channels=2 format=s16le sink_properties=device.description=${AUDIO_SINK}" \
     --log-target=file:/tmp/pulse.log >/dev/null 2>&1 &
   CHILD_PIDS+=("$!")
   for i in $(seq 1 30); do
@@ -120,8 +122,13 @@ fi
 # -nowf 会让部分环境抓不到内容，这里不再使用；剪贴板要双向同步，别加 -nosel
 # -xrandr resize：帧缓冲尺寸变了（手机转屏）就用 NewFBSize 通知客户端，
 # 而不是让 x11vnc 自己退出。noVNC 支持 NewFBSize，画面会跟着变形状。
+# -wait/-defer：抓屏轮询与发送的间隔(ms)。默认 20ms 相当于 50 次/秒的全屏扫描，
+#   实测把它放到 40ms（=25fps 上限）容器 CPU 从 27% 降到 19%，操作手感没有差别。
+#   （-noxdamage 保留：这里 scrcpy 走软件渲染，XDAMAGE 事件不可靠，实测省不出 CPU）
 X11VNC_ARGS=(-display "$DISPLAY" -rfbport "$VNC_PORT" -forever -shared -noxdamage -repeat -xkb
-             -xrandr resize)
+             -xrandr resize
+             -wait "${VNC_POLL_MS:-40}" -defer "${VNC_POLL_MS:-40}"
+             -nocursorshape -nowireframe)
 if [[ -n "$VNC_PASSWORD" ]]; then
   mkdir -p /root/.vnc
   x11vnc -storepasswd "$VNC_PASSWORD" /root/.vnc/passwd >/dev/null 2>&1
@@ -235,7 +242,10 @@ run_scrcpy() {
     args+=(--video-bit-rate "${SCRCPY_BITRATE:-8M}")
     if [[ "$with_audio" == "yes" ]]; then
       # output = 转发系统混音（安卓 11+）。失败时 scrcpy 只警告不退出。
-      args+=(--audio-source=output --audio-codec=opus --audio-buffer=120)
+      # 用 raw 而不是 opus：走的是本机 adb，带宽无所谓，但能省掉安卓侧
+      # MediaCodec 编码 + 客户端解码两份 CPU；而且 redroid 的 opus 编码器
+      # 实测会抛 CodecException(0x80000000) 把音频线程整条打死。
+      args+=(--audio-source=output --audio-codec="${SCRCPY_AUDIO_CODEC:-raw}" --audio-buffer=120)
     else
       args+=(--no-audio)
     fi

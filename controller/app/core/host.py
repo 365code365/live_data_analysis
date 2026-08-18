@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 from functools import lru_cache
 from pathlib import Path
@@ -65,3 +66,54 @@ def require_android_support() -> None:
     caps = capabilities()
     if not caps["android_supported"]:
         raise RuntimeError(BINDER_HELP)
+
+
+# 给安卓之外的东西（控制器、网关、画面容器、宿主自己）留出的余量。
+# 一台安卓实例吃掉宿主几乎全部内存时，表现不是「跑得慢」而是整机卡死。
+HOST_RESERVE_MB = 1536
+HOST_RESERVE_RATIO = 0.15
+
+
+@lru_cache(maxsize=1)
+def resources() -> dict[str, Any]:
+    """宿主的 CPU 核数与物理内存。
+
+    控制器跑在容器里，但 /proc/meminfo 与 /proc/cpuinfo 都不做命名空间隔离，
+    读到的就是宿主的真实规格 —— 正好用来判断某个性能档位在这台机器上开不开得起。
+    """
+    mem_total_mb = 0
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                mem_total_mb = int(line.split()[1]) // 1024
+                break
+    except (OSError, ValueError):
+        pass
+
+    cpus = os.cpu_count() or 0
+    reserve = max(HOST_RESERVE_MB, int(mem_total_mb * HOST_RESERVE_RATIO)) if mem_total_mb else 0
+    return {
+        "cpu_count": cpus,
+        "memory_total_mb": mem_total_mb,
+        # 单台安卓实例最多能要多少内存（再多就该整机 swap / OOM 了）
+        "memory_budget_mb": max(0, mem_total_mb - reserve),
+        "reserved_mb": reserve,
+    }
+
+
+def fits_host(*, memory_mb: int = 0, cpu_limit: float = 0) -> tuple[bool, str]:
+    """这个规格在当前宿主上开不开得起。返回 (行不行, 说明)。"""
+    res = resources()
+    budget = int(res["memory_budget_mb"] or 0)
+    cpus = int(res["cpu_count"] or 0)
+
+    if memory_mb and budget and memory_mb > budget:
+        return False, (
+            f"这台宿主只有 {res['memory_total_mb'] // 1024}GB 内存，"
+            f"给安卓实例的上限约 {budget // 1024}GB（要给控制器、网关、画面容器留出余量）。"
+            f"该规格要 {memory_mb // 1024}GB，开起来会把整机拖死。"
+            "请选低一档，或给宿主/虚拟机加内存。"
+        )
+    if cpu_limit and cpus and cpu_limit > cpus:
+        return False, f"该规格要 {cpu_limit:g} 核，而宿主只有 {cpus} 核。"
+    return True, ""

@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     device_height: int = 1280
     device_dpi: int = 320
     redroid_gpu_mode: str = "guest"
+    # 安卓端的渲染帧率。没有 GPU 时 surfaceflinger 是纯软件合成，实测它就是最大的
+    # CPU 消耗项（放直播时能到 90%+ 一个核），帧率直接决定它的工作量。
+    # 监控场景 24 帧完全够看；盯多台可以再降到 20 或 15。
+    redroid_fps: int = 24
     device_memory_mb: int = 0  # 0 = 不限制
 
     # ── 端口分配 ──────────────────────────────────────────────────────

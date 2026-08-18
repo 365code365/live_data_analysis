@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from .. import catalogs
 from ..config import settings
-from ..core import billing
+from ..core import billing, host
 from ..core.docker_manager import DockerError, get_docker
 from ..db import get_session
 from ..models import Device, Plan, ProxyProfile
@@ -67,10 +67,18 @@ def specs(session: Session = Depends(get_session)) -> dict[str, Any]:
         select(Plan).where(Plan.enabled == True).order_by(Plan.sort_order, Plan.id)  # noqa: E712
     ).all()
 
+    # 档位是产品层面的固定选项，但这台机器开不开得起要如实标出来：
+    # 在 7.7GB 的宿主上开一台 8GB 的实例，结果不是「慢一点」而是整机卡死。
+    tiers = []
+    for tier in catalogs.PERFORMANCE_TIERS:
+        ok, reason = host.fits_host(memory_mb=tier["memory_mb"], cpu_limit=tier["cpu_limit"])
+        tiers.append({**tier, "fits": ok, "unfit_reason": reason})
+
     return {
-        "performance": catalogs.PERFORMANCE_TIERS,
+        "performance": tiers,
         "screens": catalogs.SCREEN_PRESETS,
         "disks": catalogs.DISK_OPTIONS,
+        "host": host.resources(),
         "defaults": {
             "perf": catalogs.DEFAULT_PERF,
             "screen": catalogs.DEFAULT_SCREEN,

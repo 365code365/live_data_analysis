@@ -102,13 +102,19 @@
       state.fb = null;
       state.fbKey = null;
       $('#vncFrame').removeAttribute('src');
-      const stopped = d.status === 'stopped' || !cs.android;
-      const info = stopped ? null : await api(`/api/devices/${deviceId}/vnc`).catch(() => null);
+      // states_known=false 表示这次没从 docker 读到状态，容器状态不可信。
+      // 这种时候绝不能显示「设备已停止 + 启动设备」：启动会把整组容器销毁重建，
+      // 一次误点就是一次真实掉线（adb 断、装应用失败、画面重连）。
+      const unknown = d.states_known === false;
+      const stopped = !unknown && (d.status === 'stopped' || !cs.android);
+      const info = stopped || unknown ? null : await api(`/api/devices/${deviceId}/vnc`).catch(() => null);
       mask(
-        stopped ? '设备已停止' : '设备还没准备好',
-        stopped
-          ? `容器状态：网关 ${cs.gw || '未运行'} / 安卓 ${cs.android || '未运行'} / 画面 ${cs.vnc || '未运行'}\n点下面的「启动设备」拉起来，安卓开机约 1-2 分钟。`
-          : (info && info.problem) || '容器未全部就绪，启动后自动恢复',
+        unknown ? '正在读取设备状态…' : (stopped ? '设备已停止' : '设备还没准备好'),
+        unknown
+          ? '暂时读不到容器状态（宿主忙或 docker 响应慢），会自动重试。设备很可能还在正常运行，不要重启。'
+          : stopped
+            ? `容器状态：网关 ${cs.gw || '未运行'} / 安卓 ${cs.android || '未运行'} / 画面 ${cs.vnc || '未运行'}\n点下面的「启动设备」拉起来，安卓开机约 1-2 分钟。`
+            : (info && info.problem) || '容器未全部就绪，启动后自动恢复',
       );
       $('#maskStart').hidden = !stopped;
       return;

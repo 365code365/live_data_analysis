@@ -452,6 +452,85 @@ docker logs ldm_vnc_1 | grep -E '铺满守护|画面为'
 再用 `xrandr --fb` 缩到实际方向），所以将来换成支持转屏的安卓镜像时，
 转屏后画面形状会自动跟着变，不用改代码。
 
+### 操作卡顿 / CPU 一直很高
+
+先分清是「安卓自己慢」还是「我们的画面链路慢」，两者的解法完全不同：
+
+```bash
+docker stats --no-stream                       # 哪个容器在吃 CPU
+docker exec ldm_vnc_1 ps aux --sort=-%cpu | head -6    # 画面链路里的分项
+docker exec ldm_android_1 top -bn1 -m 8 | tail -10     # 安卓里在跑什么
+```
+
+实测一台放着抖音直播的 720×1280 实例（6 核 / 7.7GB 的 lima 虚拟机）：
+
+| 进程 | 位置 | CPU | 说明 |
+| --- | --- | --- | --- |
+| `surfaceflinger` | 安卓 | **90%** | 没有 GPU，纯软件合成。帧率直接决定它的工作量 |
+| `com.ss.android.ugc.aweme` | 安卓 | 48% | App 自己在解码直播流 |
+| `media.swcodec` | 安卓 | 22% | **软件**视频解码 |
+| `scrcpy` | 画面容器 | 18-28% | 取流 + 软件渲染到 X |
+| `pulseaudio` | 画面容器 | 10-14% | 只有开了声音才有 |
+| `ffmpeg` | 画面容器 | 9-11% | **只有真的有人在听时才存在** |
+| `x11vnc` | 画面容器 | 2-7% | 抓屏 |
+| `Xvfb` | 画面容器 | 3-6% | 虚拟屏 |
+
+结论：**大头在安卓内部的软件渲染与软解码，不在我们的编排里**。这是 redroid 在没有
+`/dev/dri` 的机器上的固有代价（`REDROID_GPU_MODE=guest` = SwiftShader 软件 GL）。
+能拧的旋钮按性价比排序：
+
+1. **降安卓渲染帧率**（最有效）：`.env` 里 `REDROID_FPS=24`（默认已是 24，可再降到 20/15）。
+   surfaceflinger 与解码器的工作量基本随帧率线性下降；盯播场景 15 帧也完全够用。
+   改完要**重启设备**才生效（它是开机参数）。
+2. **不需要声音就别开**：新建云手机时「开启声音转发」默认不勾。开着的话
+   pulseaudio + ffmpeg 一起要 20% 上下。音频流已经改成**按需编码**：没人收听时
+   ffmpeg 根本不启动（以前是常驻，白吃 5%）。
+3. **别超配**：给一台实例分配超过宿主容量的内存，表现不是「这台慢」而是**整机卡死**。
+   新建对话框会把装不下的档位标成「装不下」并说明原因，服务端也会直接拒绝创建
+   （`GET /api/specs` 里有宿主真实的核数/内存与单实例上限）。
+4. 想要硬件加速就得有 `/dev/dri`：Linux 物理机上把 GPU 直通进容器
+   （`REDROID_GPU_MODE=host`）能把 surfaceflinger 的开销降一个数量级。
+   macOS 上的 lima/UTM 虚拟机拿不到可用的 DRM 设备，这条路走不通。
+
+画面链路侧已经做的优化（都在 `docker/vnc/` 里，实测有效）：
+
+- `x11vnc -wait 40 -defer 40`：抓屏轮询从每 20ms 一次放到 40ms（≈25fps 上限），
+  画面容器 CPU 从 27% 降到 19%，手感没有差别
+- scrcpy `--max-fps 24 --video-bit-rate 4M`：走的是本机 adb，8M 码率只是白烧解码 CPU
+- scrcpy `--audio-codec=raw`：省掉安卓侧 MediaCodec 编码 + 客户端解码两份开销，
+  顺带绕开 redroid 上 opus 编码器会抛 `CodecException(0x80000000)` 把音频线程打死的 bug
+- PulseAudio null sink 与 ffmpeg 都固定 48kHz，与安卓侧对齐，省掉一道重采样
+- 列表页预览图改成服务端缩放（`?width=360` → JPEG）：一张从 82KB/850ms 降到 14KB/200ms
+- 容器状态查询加 1.5 秒缓存：`/api/devices` 响应从 100-700ms 降到 5-20ms
+
+### 运行应用时设备总在重启
+
+已修，而且这个根因值得记下来。
+
+`POST /api/devices/{id}/start` 以前是无条件走 `start_stack`，而 `start_stack` 的第一步
+就是把 gw / android / vnc **三个容器全部删掉重建**。链条是这样的：
+
+1. 宿主 CPU 吃紧时 docker API 会变慢，`list_managed()` 偶尔超时
+2. 容器状态读不到 → 返回空字典 → 前端分不清「读不到」和「容器不存在」，
+   于是把好设备显示成「设备已停止」，还贴心地给出「启动设备」按钮
+3. 用户点一下 → 一次真实的破坏性重启：adb 掉线、装应用报 `device offline`、画面断线重连
+
+三处都补上了：
+
+- **服务端幂等**：三个容器都在 `running` 时 `/start` 直接返回（实测从 20-40 秒的重建变成 10ms 的空操作），
+  日志里会写「设备 N 容器均已在跑，跳过重建」
+- **状态可信度**：接口新增 `states_known` 字段，读不到 docker 时前端显示「状态未知，会自动重试」，
+  不再显示「已停止」，也不给「启动设备」按钮
+- **安装重试**：adb 瞬断（`offline` / 连接关闭 / 超时）时等设备恢复后重试，最多 3 次，
+  而不是一次抖动就把安装任务判失败
+
+自查：
+
+```bash
+docker logs ldm_controller | grep -E "跳过重建|状态变化"
+docker inspect ldm_android_1 --format '{{.RestartCount}} {{.State.StartedAt}}'
+```
+
 ### 列表刷新时页面在抖 / 预览图一直闪
 
 已修。原来每 15 秒轮询一次就把整个设备网格 `innerHTML` 重写一遍，节点被销毁重建，

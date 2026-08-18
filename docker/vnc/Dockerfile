@@ -100,7 +100,8 @@ RUN ldconfig \
     && echo "scrcpy-server 已就位"
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY audio-stream.sh /usr/local/bin/audio-stream
+# 音频流按需编码：没人收听时不起 ffmpeg（原来的常驻 ffmpeg 白吃 5% CPU）
+COPY audio-stream.py /usr/local/bin/audio-stream
 # 自己的极简投屏页：只有画面，没有 noVNC 自带的控制栏
 COPY screen.html /usr/share/novnc/screen.html
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/audio-stream \
@@ -120,8 +121,12 @@ ENV DISPLAY=":0" \
     AUDIO_BITRATE="96k" \
     AUDIO_SINK="ldm" \
     SCRCPY_MAX_SIZE="0" \
-    SCRCPY_BITRATE="8M" \
-    SCRCPY_MAX_FPS="30" \
+    # 本地 loopback 传输，8M 只是白烧解码 CPU；4M 在 720p/1080p 下肉眼无差
+    SCRCPY_BITRATE="4M" \
+    # 24fps 足够看直播，比 30fps 少一成多的合成与解码开销
+    SCRCPY_MAX_FPS="24" \
+    # x11vnc 抓屏轮询间隔(ms)。实测 20→40 容器 CPU 从 27% 降到 19%，手感无差别
+    VNC_POLL_MS="40" \
     PULSE_SERVER="unix:/run/pulse/native" \
     PULSE_RUNTIME_PATH="/run/pulse"
 

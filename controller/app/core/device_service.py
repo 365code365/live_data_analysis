@@ -113,6 +113,12 @@ def create_device(
         if proxy_id and not spec.get("allow_proxy", True):
             raise DeviceError(f"套餐「{ent.plan_name}」不含独立出口 IP，请升级套餐或不要绑定代理")
 
+    # 规格超出宿主能力时直接拦住：这类实例开起来不是「慢一点」，
+    # 而是把整机内存吃干、所有设备一起卡死，事后极难定位。
+    ok, why = host.fits_host(memory_mb=memory_mb, cpu_limit=cpu_limit)
+    if not ok:
+        raise DeviceError(why)
+
     adb_port, novnc_port, audio_port = allocate_ports(session, count=3)
     device = Device(
         name=name,
@@ -156,6 +162,28 @@ def create_device(
 
 def start_device(session: Session, device: Device) -> Device:
     docker = get_docker()
+
+    # 幂等：三个容器已经都在跑就别整组销毁重建。
+    # 这是「运行应用时经常重启」的真正病根：docker API 在主机 CPU 吃紧时会偶尔
+    # 变慢，前端一时判断「设备还没准备好」并露出「启动设备」按钮；用户点一下，
+    # 而 start_stack 不管三七二十一先把 gw/android/vnc 全删了再重建——
+    # 一次误触发的 /start 就变成了一次真实的破坏性重启：adb 掉线、装应用失败、
+    # VNC 断线重连。容器确实都健康时，这里直接跳过重建，只把状态同步一下。
+    try:
+        states = docker.stack_status(int(device.id))
+    except DockerError:
+        states = {}
+    if all(states.get(role) == "running" for role in ("gw", "android", "vnc")):
+        log.info("设备 %s 容器均已在跑，跳过重建", device.id)
+        if device.status != DeviceStatus.running or device.last_error:
+            device.status = DeviceStatus.running
+            device.last_error = None
+            device.updated_at = utcnow()
+            session.add(device)
+            session.commit()
+            session.refresh(device)
+        return device
+
     images = docker.ensure_images()
     missing = [k for k, ok in images.items() if not ok]
     if missing:
@@ -178,6 +206,20 @@ def start_device(session: Session, device: Device) -> Device:
         session.add(device)
         session.commit()
         raise DeviceError(host.BINDER_HELP)
+
+    # 已经建好的设备可能是在更宽裕的宿主上（或旧版本没有校验时）建的。
+    # 这里不硬拦（否则用户连开机自救的机会都没有），但要明确警告：
+    # 规格超出宿主时表现就是整机卡顿，而不是这一台慢。
+    fit_ok, fit_why = host.fits_host(memory_mb=device.memory_mb, cpu_limit=device.cpu_limit)
+    if not fit_ok:
+        log.warning("设备 %s 规格超出宿主能力: %s", device.id, fit_why)
+        events.emit(
+            f"设备 {device.name} 的规格超出宿主能力，可能拖慢整机：{fit_why}"
+            "（可在设备详情里下调内存/CPU 后重启，或重建一台低一档的）",
+            level="warning",
+            source="device",
+            device_id=device.id,
+        )
 
     # 老设备记录没有音频端口，补一个（升级前建的设备也能听声音）
     if not device.audio_port:

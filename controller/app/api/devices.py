@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -45,9 +46,26 @@ def _get(session: Session, device_id: int) -> Device:
     return device
 
 
-def _container_states() -> dict[str, dict[str, str]]:
-    """一次 docker 调用拿到全部设备容器的真实状态：{device_id: {role: state}}。"""
+# 容器状态的短缓存。前台列表、控制台、后台运维会同时轮询，
+# 每个请求都去 docker 列一遍全部容器既慢又给 docker 加压（主机忙的时候
+# 这个调用会明显变慢，进而让界面误判「设备没准备好」）。
+_STATES_TTL = 1.5
+_states_cache: dict[str, Any] = {"at": 0.0, "data": {}, "ok": False}
+
+
+def _container_states(force: bool = False) -> tuple[dict[str, dict[str, str]], bool]:
+    """全部设备容器的真实状态：({device_id: {role: state}}, 这次有没有读到)。
+
+    第二个返回值很重要：读失败时返回的空字典和「容器真的不存在」长得一样，
+    前端如果分不清就会把好设备显示成「已停止」并诱导用户点重启 —— 而重启
+    是破坏性的（整组容器销毁重建），一次误点就是一次真的掉线。
+    """
+    now = time.monotonic()
+    if not force and now - float(_states_cache["at"]) < _STATES_TTL:
+        return _states_cache["data"], bool(_states_cache["ok"])
+
     out: dict[str, dict[str, str]] = {}
+    ok = True
     try:
         for c in get_docker().list_managed():
             did, role = c.get("device_id"), c.get("role")
@@ -55,10 +73,20 @@ def _container_states() -> dict[str, dict[str, str]]:
                 out.setdefault(did, {})[role] = c["status"]
     except DockerError as exc:
         log.warning("读取容器状态失败: %s", exc)
-    return out
+        ok = False
+        # 读失败就沿用上一次的结果，避免界面上的状态忽明忽暗
+        out = _states_cache["data"] if _states_cache["ok"] else {}
+
+    _states_cache.update({"at": now, "data": out, "ok": ok})
+    return out, ok
 
 
-def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, str]]] = None) -> dict[str, Any]:
+def _out(
+    session: Session,
+    device: Device,
+    states: Optional[dict[str, dict[str, str]]] = None,
+    states_known: bool = True,
+) -> dict[str, Any]:
     proxy = session.get(ProxyProfile, device.proxy_id) if device.proxy_id else None
     cstate = (states or {}).get(str(device.id), {}) if states is not None else None
     return {
@@ -96,6 +124,9 @@ def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, 
         },
         # 容器真实状态；None 表示本次没查
         "container_states": cstate,
+        # 这次到底有没有从 docker 读到状态。false 时上面的容器状态不可信，
+        # 界面必须显示「状态未知」而不是「已停止」，更不能诱导用户点重启。
+        "states_known": states_known if cstate is not None else None,
         "android_running": (cstate or {}).get("android") == "running" if cstate is not None else None,
         "vnc_running": (cstate or {}).get("vnc") == "running" if cstate is not None else None,
         # 画面能不能连：安卓和画面容器都得在跑
@@ -117,8 +148,8 @@ def _out(session: Session, device: Device, states: Optional[dict[str, dict[str, 
 @router.get("")
 def list_devices(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     devices = session.exec(select(Device).order_by(Device.id)).all()
-    states = _container_states()
-    return [_out(session, d, states) for d in devices]
+    states, known = _container_states()
+    return [_out(session, d, states, known) for d in devices]
 
 
 @router.post("", status_code=201)
@@ -135,7 +166,8 @@ def get_device_detail(device_id: int, session: Session = Depends(get_session)) -
     device = _get(session, device_id)
     # 详情也要带容器真实状态：设备控制台靠它判断画面能不能连，
     # 之前只有列表接口有，控制台就永远显示「设备还没准备好」。
-    return _out(session, device, _container_states())
+    states, known = _container_states()
+    return _out(session, device, states, known)
 
 
 @router.patch("/{device_id}")
@@ -343,7 +375,8 @@ def open_deeplink(device_id: int, payload: DeeplinkAction, session: Session = De
 def _offline_reason(device: Device) -> str:
     """安卓不在线时，给出能直接照着做的原因说明，而不是干巴巴的 device offline。"""
     caps = host.capabilities()
-    states = _container_states().get(str(device.id), {})
+    all_states, _ = _container_states()
+    states = all_states.get(str(device.id), {})
     android = states.get("android")
 
     if not caps["android_supported"]:
@@ -420,7 +453,17 @@ def rotate(device_id: int, payload: RotateAction, session: Session = Depends(get
 
 
 @router.get("/{device_id}/screenshot")
-def screenshot(device_id: int, session: Session = Depends(get_session)) -> Response:
+def screenshot(
+    device_id: int,
+    width: int = Query(0, ge=0, le=2160, description="按宽度等比缩放，0 = 原图"),
+    session: Session = Depends(get_session),
+) -> Response:
+    """实时截图。
+
+    列表页的预览图会周期性调这个接口，原图（1080×1920 PNG 约 1-2MB）既费
+    编码 CPU 又费带宽，所以支持按宽度缩小并转成 JPEG —— 卡片上那么小一张，
+    360px 宽足够，体积能降一个数量级。
+    """
     device = _get(session, device_id)
     dev = get_device(device.adb_addr)
     if not dev.is_online():
@@ -428,10 +471,25 @@ def screenshot(device_id: int, session: Session = Depends(get_session)) -> Respo
     tmp = settings.screenshots_dir / f"_live_{device_id}.png"
     try:
         dev.screenshot(tmp)
-        data = tmp.read_bytes()
+        if not width:
+            return Response(
+                content=tmp.read_bytes(), media_type="image/png",
+                headers={"Cache-Control": "no-store"},
+            )
+        from PIL import Image  # 控制器已依赖 Pillow（截图保存用）
+
+        with Image.open(tmp) as img:
+            if img.width > width:
+                ratio = width / img.width
+                img = img.resize((width, max(1, round(img.height * ratio))), Image.BILINEAR)
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=72, optimize=False)
+        return Response(
+            content=buf.getvalue(), media_type="image/jpeg",
+            headers={"Cache-Control": "no-store"},
+        )
     except Exception as exc:
         raise HTTPException(400, f"截图失败: {exc}") from exc
-    return Response(content=data, media_type="image/png", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/{device_id}/ui", dependencies=[Depends(require_admin)])
@@ -501,7 +559,8 @@ def screen_report(device_id: int, payload: ScreenReport, session: Session = Depe
 @router.get("/{device_id}/vnc")
 def vnc_info(device_id: int, session: Session = Depends(get_session)) -> dict[str, Any]:
     device = _get(session, device_id)
-    states = _container_states().get(str(device.id), {})
+    all_states, _ = _container_states()
+    states = all_states.get(str(device.id), {})
     vnc_state = states.get("vnc")
     ready = vnc_state == "running"
     problem = None

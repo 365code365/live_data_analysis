@@ -263,7 +263,7 @@ class DockerManager:
             f"androidboot.redroid_height={height}",
             f"androidboot.redroid_dpi={dpi}",
             f"androidboot.redroid_gpu_mode={settings.redroid_gpu_mode}",
-            "androidboot.redroid_fps=30",
+            f"androidboot.redroid_fps={settings.redroid_fps}",
             "androidboot.use_memfd=true",
         ]
         kwargs: dict[str, Any] = {}

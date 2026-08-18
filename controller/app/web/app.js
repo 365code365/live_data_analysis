@@ -196,7 +196,10 @@
       <span class="badge ${d.status}">${esc(d.status)}</span>
       ${d.recording ? '<span class="badge recording">录屏中</span>' : ''}
       <span style="flex:1"></span>
-      ${chip('gw', '网络')}${chip('android', '安卓')}${chip('vnc', '画面')}`;
+      ${d.states_known === false
+        // 读不到 docker 状态时如实说「未知」，不要拿旧状态冒充真相
+        ? '<span class="badge starting" title="暂时读不到容器状态，会自动重试">状态未知</span>'
+        : `${chip('gw', '网络')}${chip('android', '安卓')}${chip('vnc', '画面')}`}`;
   }
 
   function deviceBody(d) {
@@ -242,7 +245,8 @@
 
   async function loadThumb(id) {
     try {
-      const res = await fetch(`/api/devices/${id}/screenshot?t=${Date.now()}`);
+      // 卡片上的预览就那么大，让服务端缩到 360px 宽再发（原图 PNG 有 1-2MB）
+      const res = await fetch(`/api/devices/${id}/screenshot?width=360&t=${Date.now()}`);
       if (!res.ok) return;
       const url = URL.createObjectURL(await res.blob());
       const img = $(`#thumb-${id}`);
@@ -302,10 +306,15 @@
       specs = await api('/api/specs');
     } catch (err) { toast(`读取可选规格失败: ${err.message}`, 'err'); return; }
 
+    // 默认档位要选一个这台宿主真的开得起的：默认档装不下就退到最大的可用档
+    const fitting = specs.performance.filter((p) => p.fits !== false);
+    const defaultPerf = specs.performance.some((p) => p.code === specs.defaults.perf && p.fits !== false)
+      ? specs.defaults.perf
+      : (fitting[fitting.length - 1] || specs.performance[0] || {}).code;
     const pick = {
-      perf: specs.defaults.perf,
+      perf: defaultPerf,
       screen: specs.defaults.screen,
-      disk: (specs.performance.find((p) => p.code === specs.defaults.perf) || {}).disk_gb || 0,
+      disk: (specs.performance.find((p) => p.code === defaultPerf) || {}).disk_gb || 0,
       region: '',
       plan: '',
     };
@@ -313,8 +322,9 @@
     const planByCode = Object.fromEntries(specs.plans.map((p) => [p.code, p]));
     const enforce = !!specs.quota?.enforce;
 
-    const card = (on, badge, name, spec, note) => `
-      <div class="pick${on ? ' active' : ''}">
+    const host = specs.host || null;
+    const card = (on, badge, name, spec, note, disabled = false) => `
+      <div class="pick${on ? ' active' : ''}${disabled ? ' unfit' : ''}">
         ${badge ? `<span class="pick-badge">${esc(badge)}</span>` : ''}
         <div class="pick-name">${esc(name)}</div>
         <div class="pick-spec">${esc(spec)}</div>
@@ -345,11 +355,15 @@
         <div class="label">性能 <span class="sub">内存与 CPU 是硬限制，直接作用在容器上</span></div>
         <div class="pick-grid ${locked ? 'locked' : ''}" id="cdPerf">
           ${specs.performance.map((p) => `
-            <div data-code="${esc(p.code)}">${card(
-              !locked && pick.perf === p.code, p.badge, p.name,
-              `${p.memory_mb / 1024}GB 内存 · ${p.cpu_limit} 核 · ${p.disk_gb}GB 磁盘`, p.note,
+            <div data-code="${esc(p.code)}" ${p.fits === false ? 'data-unfit="1"' : ''}>${card(
+              !locked && pick.perf === p.code, p.fits === false ? '装不下' : p.badge, p.name,
+              `${p.memory_mb / 1024}GB 内存 · ${p.cpu_limit} 核 · ${p.disk_gb}GB 磁盘`,
+              p.fits === false ? p.unfit_reason : p.note, p.fits === false,
             )}</div>`).join('')}
         </div>
+        ${host ? `<div class="pick-note">这台宿主：${host.cpu_count} 核 / ${
+          Math.round((host.memory_total_mb || 0) / 1024)}GB 内存，单台实例可用上限约 ${
+          Math.round((host.memory_budget_mb || 0) / 1024)}GB（其余留给控制器、网关与画面容器）。</div>` : ''}
       </div>
 
       <div class="form-block">
@@ -382,9 +396,11 @@
       ${specs.disk_quota_supported ? '' : '<p class="hint">当前宿主文件系统没开 project quota，磁盘容量只作规格登记，不是硬限制。</p>'}
 
       <div class="form-row" style="margin-top:14px;gap:18px">
-        <label class="switch"><input type="checkbox" id="cdAudio" checked /> 开启声音转发</label>
+        <label class="switch"><input type="checkbox" id="cdAudio" /> 开启声音转发</label>
         <label class="switch"><input type="checkbox" id="cdAutostart" checked /> 创建后立即开机</label>
       </div>
+      <p class="hint">声音默认关：转发音频要常驻一路混音 + 编码，实测每台设备多吃约 15% CPU。
+        需要听直播声再开（开机后不能改，要改得重建实例）。</p>
 
       <div class="summary" style="margin-top:14px">
         将创建：<strong id="cdSummary">${esc(summaryText())}</strong>
@@ -443,6 +459,13 @@
         box.addEventListener('click', (e) => {
           const item = e.target.closest('[data-code]');
           if (!item) return;
+          if (item.dataset.unfit) {
+            // 宿主装不下的档位点了也开不起来，直接说清楚，别让用户等到创建失败
+            const t = specs.performance.find((p) => p.code === item.dataset.code) || {};
+            modal('这台宿主开不起这个档位', `<div class="alert warn" style="margin:0">
+              <div class="alert-body">${esc(t.unfit_reason || '资源不足')}</div></div>`);
+            return;
+          }
           pick[key] = item.dataset.code;
           box.querySelectorAll('.pick').forEach((p) => p.classList.remove('active'));
           item.querySelector('.pick').classList.add('active');
